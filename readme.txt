@@ -130,5 +130,6 @@ If you get stuck, you can ask for help in the Plugin Forum.
 
 = 8.8.1 - xxxx-xx-xx =
 * Tweak - Disables APMs when using the legacy checkout experience due Stripe deprecation by October 29, 2024.
+* Fix - Prevent marking orders on-hold with order note "Process order to take payment" when the payment has failed.
 
 [See changelog for all versions](https://raw.githubusercontent.com/woocommerce/woocommerce-gateway-stripe/trunk/changelog.txt).
