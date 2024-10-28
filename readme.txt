@@ -113,5 +113,8 @@ If you get stuck, you can ask for help in the [Plugin Forum](https://wordpress.o
 = 8.8.1 - xxxx-xx-xx =
 * Tweak - Disables APMs when using the legacy checkout experience due Stripe deprecation by October 29, 2024.
 * Fix - Prevent marking orders on-hold with order note "Process order to take payment" when the payment has failed.
+* Fix - Prevent subscriptions from being marked as "Pending" when a customer attempts to change their payment method to a declining card.
+* Fix - Delay updating the subscription's payment method until after the intent is confirmed when using the new checkout experience.
+* Fix - Display a success notice to customers after successfully changing their subscription payment method to a card that required 3DS authentication.
 
 [See changelog for all versions](https://raw.githubusercontent.com/woocommerce/woocommerce-gateway-stripe/trunk/changelog.txt).
