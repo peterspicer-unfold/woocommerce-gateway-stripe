@@ -111,6 +111,6 @@ If you get stuck, you can ask for help in the [Plugin Forum](https://wordpress.o
 == Changelog ==
 
 = 9.0.0 - xxxx-xx-xx =
-
+* Tweak - Standardize ECE Express payment buttons on Pay for Order page to match cart and checkout itemization behavior.
 
 [See changelog for all versions](https://raw.githubusercontent.com/woocommerce/woocommerce-gateway-stripe/trunk/changelog.txt).
