@@ -11,6 +11,7 @@
 * Fix - Do not load express payment buttons on switch subscription page.
 * Fix - Return 'is_live' as true in account summary response when test mode is disabled in gateway settings and charge is enabled in Stripe account.
 * Fix - Prevents notices being displayed on WordPress 6.7 due to loading translations too early (only shown on stores with WP_DEBUG enabled).
+* Tweak - Update links to plugin documentation and Stripe documentation.
 
 = 8.9.0 - 2024-11-14 =
 * Update - Enhance webhook processing to enable retrieving orders using payment_intent metadata.
@@ -1359,7 +1360,7 @@
 * Add support for changing a subscription's recurring amount
 
 = 1.5.0 - 2013-01-18 =
-* Supports Stripe Checkout https://stripe.com/docs/checkout
+* Supports Stripe Checkout https://docs.stripe.com/payments/checkout
 
 = 1.4.0 - 2013-01-18 =
 * WC 2.0 Compat
