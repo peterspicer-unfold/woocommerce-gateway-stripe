@@ -4,7 +4,7 @@ Tags: credit card, stripe, apple pay, payment request, google pay, sepa, bancont
 Requires at least: 6.5
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 8.9.0
+Stable tag: 9.0.0
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 Attributions: thorsten-stripe
@@ -110,7 +110,7 @@ If you get stuck, you can ask for help in the [Plugin Forum](https://wordpress.o
 
 == Changelog ==
 
-= 9.0.0 - xxxx-xx-xx =
+= 9.0.0 - 2024-12-12 =
 * Fix - Fix 404 that happens when using ECE and 3D Secure auth is triggered.
 * Fix - Set correct payment method when using Link and a card that is 3D Secure authenticated.
 * Fix - Fix total calculation for custom product types when using the Payment Request Button.
