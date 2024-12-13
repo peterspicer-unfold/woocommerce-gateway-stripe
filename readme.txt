@@ -111,6 +111,7 @@ If you get stuck, you can ask for help in the [Plugin Forum](https://wordpress.o
 == Changelog ==
 
 = 9.1.0 - xxxx-xx-xx =
+* Dev - Introduces a new class with payment intent statuses constants.
 * Add - Correctly handles charge expired webhook events, setting the order status to failed and adding a note.
 * Fix - Allow account creation on checkout, if enabled, when purchasing subscriptions using ECE.
 * Tweak - Add empty check for cart when checking for allowed products for express checkout.
