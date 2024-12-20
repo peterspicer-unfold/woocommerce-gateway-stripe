@@ -1,10 +1,19 @@
+/* global wc_stripe_payment_request_settings_params */
+
+import { ADMIN_URL, getSetting } from '@woocommerce/settings';
 import { __ } from '@wordpress/i18n';
 import React, { useMemo } from 'react';
-import { Card, RadioControl, CheckboxControl } from '@wordpress/components';
+import {
+	Card,
+	RadioControl,
+	CheckboxControl,
+	Notice,
+} from '@wordpress/components';
 import interpolateComponents from 'interpolate-components';
 import { Elements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import PaymentRequestButtonPreview from './payment-request-button-preview';
+import ExpressCheckoutPreviewComponent from './express-checkout-button-preview';
 import {
 	usePaymentRequestEnabledSettings,
 	usePaymentRequestLocations,
@@ -33,20 +42,20 @@ const buttonSizeOptions = [
 	{
 		label: makeButtonSizeText(
 			__(
-				'Default {{helpText}}(40 px){{/helpText}}',
+				'Small {{helpText}}(40 px){{/helpText}}',
 				'woocommerce-gateway-stripe'
 			)
 		),
-		value: 'default',
+		value: 'small',
 	},
 	{
 		label: makeButtonSizeText(
 			__(
-				'Medium {{helpText}}(48 px){{/helpText}}',
+				'Default {{helpText}}(48 px){{/helpText}}',
 				'woocommerce-gateway-stripe'
 			)
 		),
-		value: 'medium',
+		value: 'default',
 	},
 	{
 		label: makeButtonSizeText(
@@ -124,6 +133,8 @@ const PaymentRequestsSettingsSection = () => {
 	const accountId = useAccount().data?.account?.id;
 	const [ publishableKey ] = useAccountKeysPublishableKey();
 	const [ testPublishableKey ] = useAccountKeysTestPublishableKey();
+	const isECEEnabled =
+		wc_stripe_payment_request_settings_params.is_ece_enabled; // eslint-disable-line camelcase
 
 	const stripePromise = useMemo( () => {
 		return loadStripe(
@@ -155,9 +166,21 @@ const PaymentRequestsSettingsSection = () => {
 		}
 	};
 
+	const checkoutPageUrl = `${ ADMIN_URL }post.php?post=${
+		getSetting( 'storePages' )?.checkout?.id
+	}&action=edit`;
+
 	return (
 		<Card className="express-checkout-settings">
 			<CardBody>
+				<Notice status="warning" isDismissible={ false }>
+					{ __(
+						'Some appearance settings may be overridden by the express payment section of the'
+					) }{ ' ' }
+					<a href={ checkoutPageUrl }>
+						{ __( 'Cart & Checkout blocks.' ) }
+					</a>
+				</Notice>
 				<h4>
 					{ __(
 						'Show express checkouts on',
@@ -242,9 +265,18 @@ const PaymentRequestsSettingsSection = () => {
 				/>
 				<p>{ __( 'Preview', 'woocommerce-gateway-stripe' ) }</p>
 				<LoadableAccountSection numLines={ 7 }>
-					<Elements stripe={ stripePromise }>
-						<PaymentRequestButtonPreview />
-					</Elements>
+					{ isECEEnabled ? (
+						<ExpressCheckoutPreviewComponent
+							stripe={ stripePromise }
+							buttonType={ buttonType }
+							theme={ theme }
+							size={ size }
+						/>
+					) : (
+						<Elements stripe={ stripePromise }>
+							<PaymentRequestButtonPreview />
+						</Elements>
+					) }
 				</LoadableAccountSection>
 			</CardBody>
 		</Card>

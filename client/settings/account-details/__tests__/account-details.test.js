@@ -64,7 +64,29 @@ describe( 'AccountDetails', () => {
 		} );
 		render( <AccountDetails /> );
 
-		expect( screen.queryByText( /error/i ) ).not.toBeInTheDocument();
-		expect( screen.queryByText( /may be disabled/i ) ).toBeInTheDocument();
+		expect( screen.queryByTestId( 'help' ) ).toBeInTheDocument();
+	} );
+
+	it( 'renders the warning icon and the paragraph with the "warning" class when there\'s a warning message', () => {
+		const mockedWarningMessage = 'Warning: random message';
+		useAccount.mockReturnValue( {
+			data: {
+				account: {
+					settings: {
+						payouts: {},
+					},
+					payouts_enabled: false,
+					charges_enabled: false,
+				},
+				webhook_status_message: mockedWarningMessage,
+				webhook_status_code: 4,
+			},
+		} );
+		render( <AccountDetails /> );
+
+		expect( screen.queryByTestId( 'warning-icon' ) ).toBeInTheDocument();
+		expect(
+			screen.queryByText( mockedWarningMessage )
+		).toBeInTheDocument();
 	} );
 } );

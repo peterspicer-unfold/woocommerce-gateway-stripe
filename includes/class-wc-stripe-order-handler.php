@@ -26,6 +26,10 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 		add_action( 'woocommerce_order_status_cancelled', [ $this, 'cancel_payment' ] );
 		add_action( 'woocommerce_order_status_refunded', [ $this, 'cancel_payment' ] );
 		add_filter( 'woocommerce_tracks_event_properties', [ $this, 'woocommerce_tracks_event_properties' ], 10, 2 );
+
+		add_action( 'woocommerce_cancel_unpaid_order', [ $this, 'prevent_cancelling_orders_awaiting_action' ], 10, 2 );
+
+		add_filter( 'wc_order_is_editable', [ $this, 'disable_edit_for_uncaptured_orders' ], 10, 2 );
 	}
 
 	/**
@@ -39,7 +43,82 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 	}
 
 	/**
+	 * Disables the ability to edit for orders with uncaptured payment.
+	 *
+	 * @param $editable boolean The current editability of the order.
+	 * @param $order WC_Order The order object.
+	 * @return boolean false if the order has uncaptured payment, true otherwise.
+	 */
+	public function disable_edit_for_uncaptured_orders( $editable, $order ) {
+		// Bail if payment method is not manual capture supporting stripe method.
+		if ( ! WC_Stripe_Helper::payment_method_allows_manual_capture( $order->get_payment_method() ) ) {
+			return $editable;
+		}
+
+		try {
+			$intent = $this->get_intent_from_order( $order );
+
+			if ( $intent && 'requires_capture' === $intent->status ) {
+				$editable = false;
+
+				// add hooks to change text about the reason when order items cannot be edited
+				add_action( 'woocommerce_admin_order_totals_after_total', [ $this, 'maybe_attach_gettext_callback' ] );
+				add_action( 'woocommerce_order_item_add_action_buttons', [ $this, 'maybe_unattach_gettext_callback' ] );
+			}
+		} catch ( Exception $e ) {
+			WC_Stripe_Logger::log( 'Error getting intent from order: ' . $e->getMessage() );
+		}
+
+		return $editable;
+	}
+
+	/**
+	 * Only attach the gettext callback when on admin edit order screen.
+	 */
+	public function maybe_attach_gettext_callback() {
+
+		if ( is_admin() && function_exists( 'get_current_screen' ) ) {
+			$screen = get_current_screen();
+
+			if ( is_object( $screen ) && in_array( $screen->id, [ 'woocommerce_page_wc-orders', 'edit-shop_order' ], true ) ) {
+				// Hook to gettext callback to change the tooltip text
+				add_filter( 'gettext', [ $this, 'change_order_item_editable_text_tooltip' ], 10, 3 );
+			}
+		}
+	}
+
+	/**
+	 * Unattach the gettext callback.
+	 */
+	public function maybe_unattach_gettext_callback() {
+
+		if ( is_admin() && function_exists( 'get_current_screen' ) ) {
+			$screen = get_current_screen();
+
+			if ( is_object( $screen ) && in_array( $screen->id, [ 'woocommerce_page_wc-orders', 'edit-shop_order' ], true ) ) {
+				// Unhook gettext callback to prevent extra call impact
+				remove_filter( 'gettext', [ $this, 'change_order_item_editable_text_tooltip' ], 10 );
+			}
+		}
+	}
+
+	/**
+	* When order items are not editable due to the charge being authorized to capture the current amount,
+	* change the tooltip to explain the reason.
+	*/
+	public function change_order_item_editable_text_tooltip( $translated_text, $text, $domain ) {
+		switch ( $text ) {
+			case 'To edit this order change the status back to "Pending payment"':
+				$translated_text = __( 'This order is no longer editable because the charge has been authorized for this amount.', 'woocommerce-gateway-stripe' );
+				break;
+		}
+
+		return $translated_text;
+	}
+
+	/**
 	 * Processes payments.
+	 *
 	 * Note at this time the original source has already been
 	 * saved to a customer card (if applicable) from process_payment.
 	 *
@@ -78,6 +157,11 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 			$this->validate_minimum_order_amount( $order );
 
 			WC_Stripe_Logger::log( "Info: (Redirect) Begin processing payment for order $order_id for the amount of {$order->get_total()}" );
+
+			// Lock the order or return if the order is already locked.
+			if ( $this->lock_order_payment( $order ) ) {
+				return;
+			}
 
 			/**
 			 * First check if the source is chargeable at this time. If not,
@@ -139,6 +223,9 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 
 				// We want to retry.
 				if ( $this->is_retryable_error( $response->error ) ) {
+					// Unlock the order before retrying.
+					$this->unlock_order_payment( $order );
+
 					if ( $retry ) {
 						// Don't do anymore retries after this.
 						if ( 5 <= $this->retry_interval ) {
@@ -184,10 +271,16 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 			/* translators: error message */
 			$order->update_status( 'failed', sprintf( __( 'Stripe payment failed: %s', 'woocommerce-gateway-stripe' ), $e->getLocalizedMessage() ) );
 
+			// Unlock the order.
+			$this->unlock_order_payment( $order );
+
 			wc_add_notice( $e->getLocalizedMessage(), 'error' );
 			wp_safe_redirect( wc_get_checkout_url() );
 			exit;
 		}
+
+		// Unlock the order.
+		$this->unlock_order_payment( $order );
 	}
 
 	/**
@@ -197,6 +290,21 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 	 * @version 4.0.0
 	 */
 	public function maybe_process_redirect_order() {
+		$gateway = WC_Stripe::get_instance()->get_main_stripe_gateway();
+
+		if ( is_a( $gateway, 'WC_Stripe_UPE_Payment_Gateway' ) ) {
+			$gateway->maybe_process_upe_redirect();
+		} else {
+			$this->maybe_process_legacy_redirect();
+		}
+	}
+
+	/**
+	 * Processes redirect payment for stores with legacy checkout experience enabled.
+	 *
+	 * @since 8.3.0
+	 */
+	private function maybe_process_legacy_redirect() {
 		if ( ! is_order_received_page() || empty( $_GET['client_secret'] ) || empty( $_GET['source'] ) ) {
 			return;
 		}
@@ -215,9 +323,10 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 	 * @return stdClass|void Result of payment capture.
 	 */
 	public function capture_payment( $order_id ) {
+		$result = new stdClass();
 		$order = wc_get_order( $order_id );
 
-		if ( 'stripe' === $order->get_payment_method() ) {
+		if ( WC_Stripe_Helper::payment_method_allows_manual_capture( $order->get_payment_method() ) ) {
 			$charge             = $order->get_transaction_id();
 			$captured           = $order->get_meta( '_stripe_charge_captured', true );
 			$is_stripe_captured = false;
@@ -235,7 +344,7 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 					if ( ! empty( $intent->error ) ) {
 						/* translators: error message */
 						$order->add_order_note( sprintf( __( 'Unable to capture charge! %s', 'woocommerce-gateway-stripe' ), $intent->error->message ) );
-					} elseif ( 'requires_capture' === $intent->status ) {
+					} elseif ( WC_Stripe_Intent_Status::REQUIRES_CAPTURE === $intent->status ) {
 						$level3_data = $this->get_level3_data_from_order( $order );
 						$result      = WC_Stripe_API::request_with_level3_data(
 							[
@@ -252,9 +361,9 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 							$order->update_status( 'failed', sprintf( __( 'Unable to capture charge! %s', 'woocommerce-gateway-stripe' ), $result->error->message ) );
 						} else {
 							$is_stripe_captured = true;
-							$result             = end( $result->charges->data );
+							$result             = $this->get_latest_charge_from_intent( $result );
 						}
-					} elseif ( 'succeeded' === $intent->status ) {
+					} elseif ( WC_Stripe_Intent_Status::SUCCEEDED === $intent->status ) {
 						$is_stripe_captured = true;
 					}
 				} else {
@@ -301,7 +410,11 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 						$order->save();
 					}
 
-					$this->update_fees( $order, $result->balance_transaction->id );
+					$balance_transaction_id = $this->get_balance_transaction_id_from_charge( $result );
+
+					if ( ! empty( $balance_transaction_id ) ) {
+						$this->update_fees( $order, $balance_transaction_id );
+					}
 				}
 
 				// This hook fires when admin manually changes order status to processing or completed.
@@ -321,9 +434,11 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 	public function cancel_payment( $order_id ) {
 		$order = wc_get_order( $order_id );
 
-		if ( 'stripe' === $order->get_payment_method() ) {
+		if ( WC_Stripe_Helper::payment_method_allows_manual_capture( $order->get_payment_method() ) ) {
 			$captured = $order->get_meta( '_stripe_charge_captured', true );
+
 			if ( 'no' === $captured ) {
+				// To cancel a pre-auth, we need to refund the charge.
 				$this->process_refund( $order_id );
 			}
 
@@ -361,19 +476,45 @@ class WC_Stripe_Order_Handler extends WC_Stripe_Payment_Gateway {
 			return $properties;
 		}
 
-		// Due diligence done. Collect the metadata.
-		$is_live         = true;
-		$stripe_settings = get_option( 'woocommerce_stripe_settings', [] );
-		if ( array_key_exists( 'testmode', $stripe_settings ) ) {
-			$is_live = 'no' === $stripe_settings['testmode'];
-		}
-
 		$properties['admin_email']                        = get_option( 'admin_email' );
-		$properties['is_live']                            = $is_live;
+		$properties['is_live']                            = WC_Stripe_Mode::is_live();
 		$properties['woocommerce_gateway_stripe_version'] = WC_STRIPE_VERSION;
 		$properties['woocommerce_default_country']        = get_option( 'woocommerce_default_country' );
 
 		return $properties;
+	}
+
+	/**
+	 * Prevents WooCommerce's hold stock feature from cancelling Stripe orders that are awaiting action from the customer,
+	 * whether it's waiting for the customer to complete 3DS or waiting for the redirect/webhook
+	 * to be processed to complete the payment.
+	 *
+	 * This function uses the _stripe_payment_awaiting_action meta to determine if the order is waiting for customer action, however if the order has
+	 * been pending for more than a day and still has this meta, we assume it's been abandoned and should be cancelled.
+	 *
+	 * @since 6.9.0
+	 *
+	 * @param bool     $cancel_order Whether to cancel the order.
+	 * @param WC_Order $order        The order object.
+	 *
+	 * @return bool
+	 */
+	public function prevent_cancelling_orders_awaiting_action( $cancel_order, $order ) {
+		if ( ! $cancel_order || ! $order instanceof WC_Order ) {
+			return $cancel_order;
+		}
+
+		// Bail if payment method is not stripe or `stripe_{apm_method}` or doesn't have an intent yet.
+		if ( substr( (string) $order->get_payment_method(), 0, 6 ) !== 'stripe' || ! $this->get_intent_from_order( $order ) ) {
+			return $cancel_order;
+		}
+
+		// If the order is awaiting action and was modified within the last day, don't cancel it.
+		if ( wc_string_to_bool( $order->get_meta( WC_Stripe_Helper::PAYMENT_AWAITING_ACTION_META, true ) ) && $order->get_date_modified( 'edit' )->getTimestamp() > strtotime( '-1 day' ) ) {
+			$cancel_order = false;
+		}
+
+		return $cancel_order;
 	}
 }
 

@@ -23,7 +23,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 	}
 
 	public function test_no_notices_are_shown_when_user_is_not_admin() {
-		update_option( 'woocommerce_stripe_settings', [ 'enabled' => 'yes' ] );
+		WC_Stripe_Helper::update_main_stripe_settings( [ 'enabled' => 'yes' ] );
 		$notices = new WC_Stripe_Admin_Notices();
 		ob_start();
 		$notices->admin_notices();
@@ -33,7 +33,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 
 	public function test_no_notices_are_shown_when_stripe_is_not_enabled() {
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
-		update_option( 'woocommerce_stripe_settings', [ 'enabled' => 'no' ] );
+		WC_Stripe_Helper::update_main_stripe_settings( [ 'enabled' => 'no' ] );
 		$notices = new WC_Stripe_Admin_Notices();
 		ob_start();
 		$notices->admin_notices();
@@ -81,8 +81,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 			}
 		);
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
-		update_option(
-			'woocommerce_stripe_settings',
+		WC_Stripe_Helper::update_main_stripe_settings(
 			[
 				'enabled'                         => 'yes',
 				'testmode'                        => 'no',
@@ -93,16 +92,16 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 		);
 
 		$stripe_settings = array_merge(
-			get_option( 'woocommerce_stripe_settings' ),
+			WC_Stripe_Helper::get_stripe_settings(),
 			[
 				'upe_checkout_experience_accepted_payments' => [
-					'giropay',
-					'bancontact',
-					'eps',
+					WC_Stripe_Payment_Methods::GIROPAY,
+					WC_Stripe_Payment_Methods::BANCONTACT,
+					WC_Stripe_Payment_Methods::EPS,
 				],
 			]
 		);
-		update_option( 'woocommerce_stripe_settings', $stripe_settings );
+		WC_Stripe_Helper::update_main_stripe_settings( $stripe_settings );
 
 		update_option( 'wc_stripe_show_style_notice', 'no' );
 		update_option( 'home', 'https://...' );
@@ -113,14 +112,12 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 		$notices->admin_notices();
 		ob_end_clean();
 		if ( WC_Stripe_Helper::is_wc_lt( WC_STRIPE_FUTURE_MIN_WC_VER ) ) {
-			$this->assertCount( 4, $notices->notices );
+			$this->assertCount( 2, $notices->notices );
 			$this->assertArrayHasKey( 'wcver', $notices->notices );
 		} else {
-			$this->assertCount( 3, $notices->notices );
+			$this->assertCount( 1, $notices->notices );
 		}
-		$this->assertArrayHasKey( 'giropay_upe', $notices->notices );
-		$this->assertArrayHasKey( 'bancontact_upe', $notices->notices );
-		$this->assertArrayHasKey( 'eps_upe', $notices->notices );
+		$this->assertArrayHasKey( 'upe_payment_methods', $notices->notices );
 	}
 
 	public function test_invalid_keys_notice_is_shown_when_account_data_is_not_valid() {
@@ -136,8 +133,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 		WC_Stripe::get_instance()->account->method( 'get_cached_account_data' )->willReturn( null );
 
 		wp_set_current_user( $this->factory->user->create( [ 'role' => 'administrator' ] ) );
-		update_option(
-			'woocommerce_stripe_settings',
+		WC_Stripe_Helper::update_main_stripe_settings(
 			[
 				'enabled'         => 'yes',
 				'testmode'        => 'no',
@@ -173,6 +169,27 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 				],
 				[
 					'style',
+				],
+			],
+			[
+				[
+					'woocommerce_stripe_settings' => [
+						'enabled'              => 'yes',
+						'testmode'             => 'yes',
+						'test_publishable_key' => 'pk_test_valid_test_key',
+						'test_secret_key'      => 'sk_test_valid_test_key',
+					],
+					'wc_stripe_show_style_notice' => 'no',
+					'wc_stripe_show_sca_notice'   => 'no',
+					'home'                        => 'https://...',
+				],
+				[
+					'mode',
+				],
+				'/All transactions are simulated. Customers can\'t make real purchases through Stripe./',
+				[
+					'page'    => 'wc-settings',
+					'section' => 'stripe',
 				],
 			],
 			[
@@ -232,7 +249,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 				[
 					'keys',
 				],
-				'/set your Stripe account keys/',
+				'/and use the \<strong\>Configure Connection\<\/strong\> button to reconnect/',
 			],
 			[
 				[
@@ -270,7 +287,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 				[
 					'page' => 'wc-settings',
 				],
-				'/set your Stripe account keys/',
+				'/and use the \<strong\>Configure Connection\<\/strong\> button to reconnect/',
 			],
 			[
 				[
@@ -287,7 +304,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 				[
 					'keys',
 				],
-				'/your test keys may not be valid/',
+				'/Stripe is in test mode however your API keys may not be valid/',
 			],
 			[
 				[
@@ -300,6 +317,14 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 					'wc_stripe_show_style_notice' => 'no',
 					'wc_stripe_show_sca_notice'   => 'no',
 					'home'                        => 'https://...',
+				],
+				[
+					'mode',
+				],
+				false,
+				[
+					'page'    => 'wc-settings',
+					'section' => 'stripe',
 				],
 			],
 			[
@@ -317,7 +342,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 				[
 					'keys',
 				],
-				'/your live keys may not be valid/',
+				'/Stripe is in live mode however your API keys may not be valid/',
 			],
 			[
 				[
@@ -379,7 +404,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 					'sca',
 					'changed_keys',
 				],
-				'/set your Stripe account keys/',
+				'/and use the \<strong\>Configure Connection\<\/strong\> button to reconnect/',
 			],
 			[
 				[
@@ -396,7 +421,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 					'sca',
 					'changed_keys',
 				],
-				'/set your Stripe account keys/',
+				'/and use the \<strong\>Configure Connection\<\/strong\> button to reconnect/',
 			],
 			[
 				[
@@ -478,7 +503,7 @@ class WC_Stripe_Admin_Notices_Test extends WP_UnitTestCase {
 					],
 				],
 				[
-					'giropay',
+					'payment_methods',
 				],
 			],
 		];

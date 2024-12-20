@@ -139,7 +139,7 @@ class WC_REST_Stripe_Orders_Controller extends WC_Stripe_REST_Base_Controller {
 			}
 
 			// Ensure that intent can be captured.
-			if ( ! in_array( $intent->status, [ 'processing', 'requires_capture' ], true ) ) {
+			if ( ! in_array( $intent->status, [ WC_Stripe_Intent_Status::PROCESSING, WC_Stripe_Intent_Status::REQUIRES_CAPTURE ], true ) ) {
 				return new WP_Error( 'wc_stripe_payment_uncapturable', __( 'The payment cannot be captured', 'woocommerce-gateway-stripe' ), [ 'status' => 409 ] );
 			}
 
@@ -149,12 +149,12 @@ class WC_REST_Stripe_Orders_Controller extends WC_Stripe_REST_Base_Controller {
 			$this->gateway->save_intent_to_order( $order, $intent );
 
 			// Capture payment intent.
-			$charge = end( $intent->charges->data );
+			$charge = $this->gateway->get_latest_charge_from_intent( $intent );
 			$this->gateway->process_response( $charge, $order );
 			$result = WC_Stripe_Order_Handler::get_instance()->capture_payment( $order );
 
 			// Check for failure to capture payment.
-			if ( empty( $result ) || empty( $result->status ) || 'succeeded' !== $result->status ) {
+			if ( empty( $result ) || empty( $result->status ) || WC_Stripe_Intent_Status::SUCCEEDED !== $result->status ) {
 				return new WP_Error(
 					'wc_stripe_capture_error',
 					sprintf(

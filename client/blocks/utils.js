@@ -1,7 +1,9 @@
-import { getSetting } from '@woocommerce/settings';
+/* global wc */
+
+import { PAYMENT_METHOD_LINK } from 'wcstripe/stripe-utils/constants';
 
 export const getBlocksConfiguration = () => {
-	const stripeServerData = getSetting( 'stripe_data', null );
+	const stripeServerData = wc?.wcSettings?.getSetting( 'stripe_data', null );
 
 	if ( ! stripeServerData ) {
 		throw new Error( 'Stripe initialization data is not available' );
@@ -19,6 +21,18 @@ export const getBlocksConfiguration = () => {
  * @return {Object} A Stripe payment request.
  */
 export const createPaymentRequestUsingCart = ( stripe, cart ) => {
+	const disableWallets = [];
+
+	// Prevent displaying Link in the PRBs if disabled in the plugin settings.
+	if ( ! getBlocksConfiguration()?.stripe?.is_link_enabled ) {
+		disableWallets.push( PAYMENT_METHOD_LINK );
+	}
+
+	// Prevent displaying Apple Pay and Google Pay in the PRBs if disabled in the plugin settings.
+	if ( ! getBlocksConfiguration()?.stripe?.is_payment_request_enabled ) {
+		disableWallets.push( 'applePay', 'googlePay' );
+	}
+
 	const options = {
 		total: cart.order_data.total,
 		currency: cart.order_data.currency,
@@ -29,6 +43,7 @@ export const createPaymentRequestUsingCart = ( stripe, cart ) => {
 			?.needs_payer_phone,
 		requestShipping: cart.shipping_required ? true : false,
 		displayItems: cart.order_data.displayItems,
+		disableWallets,
 	};
 
 	// Puerto Rico (PR) is the only US territory/possession that's supported by Stripe.
@@ -70,4 +85,58 @@ export const getApiKey = () => {
 		);
 	}
 	return apiKey;
+};
+
+/**
+ * Get order attribution data from the hidden inputs.
+ *
+ * @return {Object} Order attribution data.
+ */
+export const extractOrderAttributionData = () => {
+	const orderAttributionWrapper = document.getElementsByTagName(
+		'wc-order-attribution-inputs'
+	);
+	if ( ! orderAttributionWrapper.length ) {
+		return {};
+	}
+
+	const orderAttributionData = {};
+	const orderAttributionInputs = orderAttributionWrapper[ 0 ].children;
+	for ( let i = 0; i < orderAttributionInputs.length; i++ ) {
+		orderAttributionData[ orderAttributionInputs[ i ].name ] =
+			orderAttributionInputs[ i ].value;
+	}
+	return orderAttributionData;
+};
+
+/**
+ * Populate order attribution inputs with order tracking data.
+ *
+ * @return {void}
+ */
+export const populateOrderAttributionInputs = () => {
+	const orderAttribution = window?.wc_order_attribution;
+	if ( orderAttribution ) {
+		orderAttribution.setOrderTracking(
+			orderAttribution.params.allowTracking
+		);
+	}
+};
+
+/**
+ * Add order attribution inputs to the page.
+ *
+ * @return {void}
+ */
+export const addOrderAttributionInputsIfNotExists = () => {
+	const elementId = 'wc-stripe-express-checkout__order-attribution-inputs';
+	if ( document.getElementById( elementId ) ) {
+		return;
+	}
+
+	const orderAttributionInputs = document.createElement(
+		'wc-order-attribution-inputs'
+	);
+	orderAttributionInputs.id = elementId;
+	document.body.appendChild( orderAttributionInputs );
 };

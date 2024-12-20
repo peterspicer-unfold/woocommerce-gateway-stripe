@@ -20,7 +20,9 @@ class WC_Stripe_Customer {
 	 */
 	const STRIPE_PAYMENT_METHODS = [
 		WC_Stripe_UPE_Payment_Method_CC::STRIPE_ID,
+		WC_Stripe_UPE_Payment_Method_LINK::STRIPE_ID,
 		WC_Stripe_UPE_Payment_Method_Sepa::STRIPE_ID,
+		WC_Stripe_UPE_Payment_Method_Cash_App_Pay::STRIPE_ID,
 	];
 
 	/**
@@ -122,8 +124,16 @@ class WC_Stripe_Customer {
 	 * @return array
 	 */
 	protected function generate_customer_request( $args = [] ) {
-		$billing_email = isset( $_POST['billing_email'] ) ? filter_var( wp_unslash( $_POST['billing_email'] ), FILTER_SANITIZE_EMAIL ) : '';
-		$user          = $this->get_user();
+		$billing_email  = isset( $_POST['billing_email'] ) ? filter_var( wp_unslash( $_POST['billing_email'] ), FILTER_SANITIZE_EMAIL ) : '';
+		$user           = $this->get_user();
+		$address_fields = [
+			'line1'       => 'billing_address_1',
+			'line2'       => 'billing_address_2',
+			'postal_code' => 'billing_postcode',
+			'city'        => 'billing_city',
+			'state'       => 'billing_state',
+			'country'     => 'billing_country',
+		];
 
 		if ( $user ) {
 			$billing_first_name = get_user_meta( $user->ID, 'billing_first_name', true );
@@ -152,8 +162,8 @@ class WC_Stripe_Customer {
 				$defaults['name'] = $billing_full_name;
 			}
 		} else {
-			$billing_first_name = isset( $_POST['billing_first_name'] ) ? filter_var( wp_unslash( $_POST['billing_first_name'] ), FILTER_SANITIZE_STRING ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
-			$billing_last_name  = isset( $_POST['billing_last_name'] ) ? filter_var( wp_unslash( $_POST['billing_last_name'] ), FILTER_SANITIZE_STRING ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+			$billing_first_name = isset( $_POST['billing_first_name'] ) ? filter_var( wp_unslash( $_POST['billing_first_name'] ), FILTER_SANITIZE_SPECIAL_CHARS ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+			$billing_last_name  = isset( $_POST['billing_last_name'] ) ? filter_var( wp_unslash( $_POST['billing_last_name'] ), FILTER_SANITIZE_SPECIAL_CHARS ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
 
 			// translators: %1$s First name, %2$s Second name.
 			$description = sprintf( __( 'Name: %1$s %2$s, Guest', 'woocommerce-gateway-stripe' ), $billing_first_name, $billing_last_name );
@@ -173,7 +183,62 @@ class WC_Stripe_Customer {
 		$defaults['metadata']          = apply_filters( 'wc_stripe_customer_metadata', $metadata, $user );
 		$defaults['preferred_locales'] = $this->get_customer_preferred_locale( $user );
 
+		// Add customer address default values.
+		foreach ( $address_fields as $key => $field ) {
+			if ( $user ) {
+				$defaults['address'][ $key ] = get_user_meta( $user->ID, $field, true );
+			} else {
+				$defaults['address'][ $key ] = isset( $_POST[ $field ] ) ? filter_var( wp_unslash( $_POST[ $field ] ), FILTER_SANITIZE_SPECIAL_CHARS ) : ''; // phpcs:ignore WordPress.Security.NonceVerification
+			}
+		}
+
 		return wp_parse_args( $args, $defaults );
+	}
+
+	/**
+	 * If customer does not exist, create a new customer. Else retrieve the Stripe customer through the API to check it's existence.
+	 * Recreate the customer if it does not exist in this Stripe account.
+	 *
+	 * @return string Customer ID
+	 *
+	 * @throws WC_Stripe_Exception
+	 */
+	public function maybe_create_customer() {
+		if ( ! $this->get_id() ) {
+			return $this->set_id( $this->create_customer() );
+		}
+
+		$response = WC_Stripe_API::retrieve( 'customers/' . $this->get_id() );
+
+		if ( ! empty( $response->error ) ) {
+			if ( $this->is_no_such_customer_error( $response->error ) ) {
+				// This can happen when switching the main Stripe account or importing users from another site.
+				// Recreate the customer in this case.
+				return $this->recreate_customer();
+			}
+
+			throw new WC_Stripe_Exception( print_r( $response, true ), $response->error->message );
+		}
+
+		return $response->id;
+	}
+
+	/**
+	 * Search for an existing customer in Stripe account by email and name.
+	 *
+	 * @param string $email Customer email.
+	 * @param string $name  Customer name.
+	 * @return array
+	 */
+	public function get_existing_customer( $email, $name ) {
+		$search_query    = [ 'query' => 'name:\'' . $name . '\' AND email:\'' . $email . '\'' ];
+		$search_response = WC_Stripe_API::request( $search_query, 'customers/search', 'GET' );
+
+		if ( ! empty( $search_response->error ) ) {
+			return [];
+		}
+
+		return $search_response->data[0] ?? [];
 	}
 
 	/**
@@ -183,8 +248,18 @@ class WC_Stripe_Customer {
 	 * @return WP_Error|int
 	 */
 	public function create_customer( $args = [] ) {
-		$args     = $this->generate_customer_request( $args );
-		$response = WC_Stripe_API::request( apply_filters( 'wc_stripe_create_customer_args', $args ), 'customers' );
+		$args = $this->generate_customer_request( $args );
+
+		// For guest users, check if a customer already exists with the same email and name in Stripe account before creating a new one.
+		if ( ! $this->get_id() && 0 === $this->get_user_id() ) {
+			$response = $this->get_existing_customer( $args['email'], $args['name'] );
+		}
+
+		if ( empty( $response ) ) {
+			$response = WC_Stripe_API::request( apply_filters( 'wc_stripe_create_customer_args', $args ), 'customers' );
+		} else {
+			$response = WC_Stripe_API::request( apply_filters( 'wc_stripe_update_customer_args', $args ), 'customers/' . $response->id );
+		}
 
 		if ( ! empty( $response->error ) ) {
 			throw new WC_Stripe_Exception( print_r( $response, true ), $response->error->message );
@@ -309,9 +384,9 @@ class WC_Stripe_Customer {
 		if ( $this->get_user_id() && class_exists( 'WC_Payment_Token_CC' ) ) {
 			if ( ! empty( $response->type ) ) {
 				switch ( $response->type ) {
-					case 'alipay':
+					case WC_Stripe_Payment_Methods::ALIPAY:
 						break;
-					case 'sepa_debit':
+					case WC_Stripe_Payment_Methods::SEPA_DEBIT:
 						$wc_token = new WC_Payment_Token_SEPA();
 						$wc_token->set_token( $response->id );
 						$wc_token->set_gateway_id( 'stripe_sepa' );
@@ -465,7 +540,7 @@ class WC_Stripe_Customer {
 	 * @param string $source_id
 	 */
 	public function delete_source( $source_id ) {
-		if ( ! $this->get_id() ) {
+		if ( empty( $source_id ) || ! $this->get_id() ) {
 			return false;
 		}
 
@@ -492,7 +567,7 @@ class WC_Stripe_Customer {
 			return false;
 		}
 
-		$response = WC_Stripe_API::request( [], "payment_methods/$payment_method_id/detach", 'POST' );
+		$response = WC_Stripe_API::detach_payment_method_from_customer( $this->get_id(), $payment_method_id );
 
 		$this->clear_cache();
 
@@ -617,31 +692,34 @@ class WC_Stripe_Customer {
 		// Options based on Stripe locales.
 		// https://support.stripe.com/questions/language-options-for-customer-emails
 		$stripe_locales = [
-			'ar'    => 'ar-AR',
-			'da_DK' => 'da-DK',
-			'de_DE' => 'de-DE',
-			'en'    => 'en-US',
-			'es_ES' => 'es-ES',
-			'es_CL' => 'es-419',
-			'es_AR' => 'es-419',
-			'es_CO' => 'es-419',
-			'es_PE' => 'es-419',
-			'es_UY' => 'es-419',
-			'es_PR' => 'es-419',
-			'es_GT' => 'es-419',
-			'es_EC' => 'es-419',
-			'es_MX' => 'es-419',
-			'es_VE' => 'es-419',
-			'es_CR' => 'es-419',
-			'fi'    => 'fi-FI',
-			'fr_FR' => 'fr-FR',
-			'he_IL' => 'he-IL',
-			'it_IT' => 'it-IT',
-			'ja'    => 'ja-JP',
-			'nl_NL' => 'nl-NL',
-			'nn_NO' => 'no-NO',
-			'pt_BR' => 'pt-BR',
-			'sv_SE' => 'sv-SE',
+			'ar'             => 'ar-AR',
+			'da_DK'          => 'da-DK',
+			'de_CH'          => 'de-DE',
+			'de_CH_informal' => 'de-DE',
+			'de_DE'          => 'de-DE',
+			'de_DE_formal'   => 'de-DE',
+			'en'             => 'en-US',
+			'es_ES'          => 'es-ES',
+			'es_CL'          => 'es-419',
+			'es_AR'          => 'es-419',
+			'es_CO'          => 'es-419',
+			'es_PE'          => 'es-419',
+			'es_UY'          => 'es-419',
+			'es_PR'          => 'es-419',
+			'es_GT'          => 'es-419',
+			'es_EC'          => 'es-419',
+			'es_MX'          => 'es-419',
+			'es_VE'          => 'es-419',
+			'es_CR'          => 'es-419',
+			'fi'             => 'fi-FI',
+			'fr_FR'          => 'fr-FR',
+			'he_IL'          => 'he-IL',
+			'it_IT'          => 'it-IT',
+			'ja'             => 'ja-JP',
+			'nl_NL'          => 'nl-NL',
+			'nn_NO'          => 'no-NO',
+			'pt_BR'          => 'pt-BR',
+			'sv_SE'          => 'sv-SE',
 		];
 
 		$preferred = isset( $stripe_locales[ $locale ] ) ? $stripe_locales[ $locale ] : 'en-US';

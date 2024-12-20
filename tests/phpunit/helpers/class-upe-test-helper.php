@@ -13,7 +13,7 @@ class UPE_Test_Helper {
 				return 'yes';
 			}
 		);
-		delete_option( 'woocommerce_stripe_settings' );
+		WC_Stripe_Helper::delete_main_stripe_settings();
 		$this->reload_payment_gateways();
 	}
 
@@ -28,11 +28,12 @@ class UPE_Test_Helper {
 		$closure();
 		WC()->payment_gateways()->payment_gateways = [];
 		WC()->payment_gateways()->init();
+		WC_Stripe_Helper::$stripe_legacy_gateways = [];
 	}
 
 	public function enable_upe() {
-		$settings = get_option( 'woocommerce_stripe_settings', [] );
+		$settings = WC_Stripe_Helper::get_stripe_settings();
 		$settings[ WC_Stripe_Feature_Flags::UPE_CHECKOUT_FEATURE_ATTRIBUTE_NAME ] = 'yes';
-		update_option( 'woocommerce_stripe_settings', $settings );
+		WC_Stripe_Helper::update_main_stripe_settings( $settings );
 	}
 }

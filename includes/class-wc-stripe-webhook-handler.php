@@ -26,6 +26,27 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 	protected $secret;
 
 	/**
+	 * The Action Scheduler service.
+	 *
+	 * @var WC_Stripe_Action_Scheduler_Service
+	 */
+	protected $action_scheduler_service;
+
+	/**
+	 * How long to wait before processing a deferred webhook.
+	 *
+	 * @var int
+	 */
+	protected $deferred_webhook_delay = 2 * MINUTE_IN_SECONDS;
+
+	/**
+	 * The Action Scheduler hook to use when retrying a webhook.
+	 *
+	 * @var string
+	 */
+	protected $deferred_webhook_action = 'wc_stripe_deferred_webhook';
+
+	/**
 	 * Constructor.
 	 *
 	 * @since 4.0.0
@@ -33,10 +54,12 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 	 */
 	public function __construct() {
 		$this->retry_interval = 2;
-		$stripe_settings      = get_option( 'woocommerce_stripe_settings', [] );
-		$this->testmode       = ( ! empty( $stripe_settings['testmode'] ) && 'yes' === $stripe_settings['testmode'] ) ? true : false;
+		$stripe_settings      = WC_Stripe_Helper::get_stripe_settings();
+		$this->testmode       = WC_Stripe_Mode::is_test();
 		$secret_key           = ( $this->testmode ? 'test_' : '' ) . 'webhook_secret';
 		$this->secret         = ! empty( $stripe_settings[ $secret_key ] ) ? $stripe_settings[ $secret_key ] : false;
+
+		$this->action_scheduler_service = new WC_Stripe_Action_Scheduler_Service();
 
 		add_action( 'woocommerce_api_wc_stripe', [ $this, 'check_for_webhook' ] );
 
@@ -44,6 +67,8 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 		// This should be roughly the same as the activation time of the version of the
 		// plugin when this code first appears.
 		WC_Stripe_Webhook_State::get_monitoring_began_at();
+
+		add_action( $this->deferred_webhook_action, [ $this, 'process_deferred_webhook' ], 10, 2 );
 	}
 
 	/**
@@ -61,27 +86,40 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			return;
 		}
 
-		$request_body    = file_get_contents( 'php://input' );
-		$request_headers = array_change_key_case( $this->get_request_headers(), CASE_UPPER );
+		try {
+			$request_body = file_get_contents( 'php://input' );
+			$event        = json_decode( $request_body );
+			$event_type   = $event->type ?? 'No event type found';
+		} catch ( Exception $e ) {
+			WC_Stripe_Logger::error( 'Webhook body could not be retrieved: ' . $e->getMessage() );
+			return;
+		}
+
+		WC_Stripe_Logger::debug( 'Webhook received: ' . $event_type );
 
 		// Validate it to make sure it is legit.
+		$request_headers   = array_change_key_case( $this->get_request_headers(), CASE_UPPER );
 		$validation_result = $this->validate_request( $request_headers, $request_body );
+
 		if ( WC_Stripe_Webhook_State::VALIDATION_SUCCEEDED === $validation_result ) {
+			WC_Stripe_Logger::debug( 'Webhook body: ' . print_r( $request_body, true ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_print_r
+
 			$this->process_webhook( $request_body );
 
-			$notification = json_decode( $request_body );
-			WC_Stripe_Webhook_State::set_last_webhook_success_at( $notification->created );
+			WC_Stripe_Webhook_State::set_last_webhook_success_at( $event->created );
 
 			status_header( 200 );
 			exit;
 		} else {
-			WC_Stripe_Logger::log( 'Incoming webhook failed validation: ' . print_r( $request_body, true ) );
+			WC_Stripe_Logger::error( 'Webhook failed validation. Reason: ' . $validation_result );
+			WC_Stripe_Logger::error( 'Webhook body: ' . print_r( $request_body, true ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_print_r
+
 			WC_Stripe_Webhook_State::set_last_webhook_failure_at( time() );
 			WC_Stripe_Webhook_State::set_last_error_reason( $validation_result );
 
 			// A webhook endpoint must return a 2xx HTTP status code to prevent future webhook
 			// delivery failures.
-			// @see https://stripe.com/docs/webhooks/build#acknowledge-events-immediately
+			// @see https://docs.stripe.com/webhooks#acknowledge-events-immediately
 			status_header( 204 );
 			exit;
 		}
@@ -105,7 +143,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 		}
 
 		if ( empty( $this->secret ) ) {
-			return $this->validate_request_user_agent( $request_headers );
+			return WC_Stripe_Webhook_State::VALIDATION_FAILED_EMPTY_SECRET;
 		}
 
 		// Check for a valid signature.
@@ -130,21 +168,6 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 		}
 
 		return WC_Stripe_Webhook_State::VALIDATION_SUCCEEDED;
-	}
-
-	/**
-	 * Verify User Agent of the incoming webhook notification. Used as fallback for the cases when webhook secret is missing.
-	 *
-	 * @since 5.0.0
-	 * @version 5.0.0
-	 * @param array $request_headers The request headers from Stripe.
-	 * @return string The validation result (e.g. self::VALIDATION_SUCCEEDED )
-	 */
-	private function validate_request_user_agent( $request_headers ) {
-		$ua_is_valid = empty( $request_headers['USER-AGENT'] ) || preg_match( '/Stripe/', $request_headers['USER-AGENT'] );
-		$ua_is_valid = apply_filters( 'wc_stripe_webhook_is_user_agent_valid', $ua_is_valid, $request_headers );
-
-		return $ua_is_valid ? WC_Stripe_Webhook_State::VALIDATION_SUCCEEDED : WC_Stripe_Webhook_State::VALIDATION_FAILED_USER_AGENT_INVALID;
 	}
 
 	/**
@@ -182,7 +205,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 	 */
 	public function process_webhook_payment( $notification, $retry = true ) {
 		// The following 3 payment methods are synchronous so does not need to be handle via webhook.
-		if ( 'card' === $notification->data->object->type || 'sepa_debit' === $notification->data->object->type || 'three_d_secure' === $notification->data->object->type ) {
+		if ( WC_Stripe_Payment_Methods::CARD === $notification->data->object->type || WC_Stripe_Payment_Methods::SEPA_DEBIT === $notification->data->object->type || 'three_d_secure' === $notification->data->object->type ) {
 			return;
 		}
 
@@ -196,6 +219,10 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 		$order_id = $order->get_id();
 
 		$is_pending_receiver = ( 'receiver' === $notification->data->object->flow );
+
+		if ( $this->lock_order_payment( $order ) ) {
+			return;
+		}
 
 		try {
 			if ( $order->has_status( [ 'processing', 'completed' ] ) ) {
@@ -241,6 +268,9 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 
 				// We want to retry.
 				if ( $this->is_retryable_error( $response->error ) ) {
+					// Unlock the order before retrying.
+					$this->unlock_order_payment( $order );
+
 					if ( $retry ) {
 						// Don't do anymore retries after this.
 						if ( 5 <= $this->retry_interval ) {
@@ -292,6 +322,8 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 				$this->send_failed_order_email( $order_id );
 			}
 		}
+
+		$this->unlock_order_payment( $order );
 	}
 
 	/**
@@ -310,7 +342,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			return;
 		}
 
-		$order->update_meta_data( '_stripe_status_before_hold', $order->get_status() );
+		$this->set_stripe_order_status_before_hold( $order, $order->get_status() );
 
 		$message = sprintf(
 		/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
@@ -323,6 +355,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			$order->update_status( 'on-hold', $message );
 		} else {
 			$order->add_order_note( $message );
+			$order->save();
 		}
 
 		do_action( 'wc_gateway_stripe_process_webhook_payment_error', $order, $notification );
@@ -361,7 +394,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			$order->update_meta_data( '_stripe_status_final', true );
 
 			// Fail order if dispute is lost, or else revert to pre-dispute status.
-			$order_status = 'lost' === $status ? 'failed' : $order->get_meta( '_stripe_status_before_hold', 'processing' );
+			$order_status = 'lost' === $status ? 'failed' : $this->get_stripe_order_status_before_hold( $order );
 			$order->update_status( $order_status, $message );
 		} else {
 			$order->add_order_note( $message );
@@ -384,7 +417,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			return;
 		}
 
-		if ( 'stripe' === $order->get_payment_method() ) {
+		if ( WC_Stripe_Helper::payment_method_allows_manual_capture( $order->get_payment_method() ) ) {
 			$charge   = $order->get_transaction_id();
 			$captured = $order->get_meta( '_stripe_charge_captured', true );
 
@@ -430,7 +463,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 	 */
 	public function process_webhook_charge_succeeded( $notification ) {
 		// The following payment methods are synchronous so does not need to be handle via webhook.
-		if ( ( isset( $notification->data->object->source->type ) && 'card' === $notification->data->object->source->type ) || ( isset( $notification->data->object->source->type ) && 'three_d_secure' === $notification->data->object->source->type ) ) {
+		if ( ( isset( $notification->data->object->source->type ) && WC_Stripe_Payment_Methods::CARD === $notification->data->object->source->type ) || ( isset( $notification->data->object->source->type ) && 'three_d_secure' === $notification->data->object->source->type ) ) {
 			return;
 		}
 
@@ -460,10 +493,23 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			$this->update_fees( $order, $notification->data->object->balance_transaction );
 		}
 
-		$order->payment_complete( $notification->data->object->id );
+		/**
+		 * If the response has a succeeded status but also has a risk/fraud outcome that requires manual review, don't mark the order as
+		 * processing/completed. This will be handled by the incoming review.open webhook.
+		 *
+		 * Depending on when Stripe sends their events and how quickly it is processed by the store, the review.open webhook (which marks orders as on-hold)
+		 * can be processed before or after the payment_intent.success webhook. This difference can lead to orders being incorrectly marked as processing/completed
+		 * in WooCommerce, but flagged for manual renewal in Stripe.
+		 *
+		 * If the review.open webhook was processed before the payment_intent.success, set the processing/completed status in `_stripe_status_before_hold`
+		 * to ensure the review.closed event handler will update the status to the proper status.
+		 */
+		if ( 'manual_review' !== $this->get_risk_outcome( $notification ) ) {
+			$order->payment_complete( $notification->data->object->id );
 
-		/* translators: transaction id */
-		$order->add_order_note( sprintf( __( 'Stripe charge complete (Charge ID: %s)', 'woocommerce-gateway-stripe' ), $notification->data->object->id ) );
+			/* translators: transaction id */
+			$order->add_order_note( sprintf( __( 'Stripe charge complete (Charge ID: %s)', 'woocommerce-gateway-stripe' ), $notification->data->object->id ) );
+		}
 
 		if ( is_callable( [ $order, 'save' ] ) ) {
 			$order->save();
@@ -475,6 +521,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 	 *
 	 * @since 4.0.0
 	 * @since 4.1.5 Can handle any fail payments from any methods.
+	 * @since 9.0.0 Can handle payment expiration.
 	 * @param object $notification
 	 */
 	public function process_webhook_charge_failed( $notification ) {
@@ -490,7 +537,11 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			return;
 		}
 
-		$message = __( 'This payment failed to clear.', 'woocommerce-gateway-stripe' );
+		if ( 'charge.expired' === $notification->type ) {
+			$message = __( 'This payment has expired.', 'woocommerce-gateway-stripe' );
+		} else {
+			$message = __( 'This payment failed to clear.', 'woocommerce-gateway-stripe' );
+		}
 		if ( ! $order->get_meta( '_stripe_status_final', false ) ) {
 			$order->update_status( 'failed', $message );
 		} else {
@@ -560,7 +611,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 
 		$order_id = $order->get_id();
 
-		if ( 'stripe' === $order->get_payment_method() ) {
+		if ( 'stripe' === substr( (string) $order->get_payment_method(), 0, 6 ) ) {
 			$charge        = $order->get_transaction_id();
 			$captured      = $order->get_meta( '_stripe_charge_captured' );
 			$refund_id     = $order->get_meta( '_stripe_refund_id' );
@@ -583,6 +634,10 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 					$order->update_status( 'cancelled' );
 				}
 
+				return;
+			}
+
+			if ( $this->lock_order_refund( $order ) ) {
 				return;
 			}
 
@@ -613,6 +668,8 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 					$this->update_fees( $order, $refund_object->balance_transaction );
 				}
 
+				$this->unlock_order_refund( $order );
+
 				/* translators: 1) amount (including currency symbol) 2) transaction id 3) refund message */
 				$order->add_order_note( sprintf( __( 'Refunded %1$s - Refund ID: %2$s - %3$s', 'woocommerce-gateway-stripe' ), $amount, $refund_object->id, $reason ) );
 			}
@@ -635,7 +692,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 
 		$order_id = $order->get_id();
 
-		if ( 'stripe' === $order->get_payment_method() ) {
+		if ( 'stripe' === substr( (string) $order->get_payment_method(), 0, 6 ) ) {
 			$charge     = $order->get_transaction_id();
 			$refund_id  = $order->get_meta( '_stripe_refund_id' );
 			$currency   = $order->get_currency();
@@ -710,7 +767,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			}
 		}
 
-		$order->update_meta_data( '_stripe_status_before_hold', $order->get_status() );
+		$this->set_stripe_order_status_before_hold( $order, $order->get_status() );
 
 		$message = sprintf(
 		/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag 3) The reason type. */
@@ -724,6 +781,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			$order->update_status( 'on-hold', $message );
 		} else {
 			$order->add_order_note( $message );
+			$order->save(); // update_status() calls save on the order, so make sure we manually call save() when not updating the status to ensure meta is saved.
 		}
 	}
 
@@ -753,12 +811,19 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 		/* translators: 1) The reason type. */
 		$message = sprintf( __( 'The opened review for this order is now closed. Reason: (%s)', 'woocommerce-gateway-stripe' ), $notification->data->object->reason );
 
-		if (
+		// Only change the status if the charge was captured, status is not final, the order is on-hold and the review was approved.
+		if ( 'yes' === $order->get_meta( '_stripe_charge_captured' ) &&
+			! $order->get_meta( '_stripe_status_final', false ) &&
 			$order->has_status( 'on-hold' ) &&
-			apply_filters( 'wc_stripe_webhook_review_change_order_status', true, $order, $notification ) &&
-			! $order->get_meta( '_stripe_status_final', false )
+			( ! empty( $notification->data->object->closed_reason ) && 'approved' === $notification->data->object->closed_reason ) &&
+			apply_filters( 'wc_stripe_webhook_review_change_order_status', true, $order, $notification )
 		) {
-			$order->update_status( $order->get_meta( '_stripe_status_before_hold', 'processing' ), $message );
+			// If the status we stored before hold is an incomplete status, restore the status to processing/completed instead.
+			$status_after_review = $this->get_stripe_order_status_before_hold( $order );
+			if ( in_array( $status_after_review, apply_filters( 'woocommerce_valid_order_statuses_for_payment_complete', [ 'on-hold', 'pending', 'failed', 'cancelled' ], $order ), true ) ) {
+				$status_after_review = apply_filters( 'woocommerce_payment_complete_order_status', $order->needs_processing() ? 'processing' : 'completed', $order->get_id(), $order );
+			}
+			$order->update_status( $status_after_review, $message );
 		} else {
 			$order->add_order_note( $message );
 		}
@@ -837,9 +902,14 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 		return false;
 	}
 
+	/**
+	 * Handles the processing of a payment intent webhook.
+	 *
+	 * @param stdClass $notification The webhook notification from Stripe.
+	 */
 	public function process_payment_intent_success( $notification ) {
 		$intent = $notification->data->object;
-		$order  = WC_Stripe_Helper::get_order_by_intent_id( $intent->id );
+		$order  = $this->get_order_from_intent( $intent );
 
 		if ( ! $order ) {
 			WC_Stripe_Logger::log( 'Could not find order via intent ID: ' . $intent->id );
@@ -861,10 +931,14 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 		}
 
 		$order_id           = $order->get_id();
-		$is_voucher_payment = in_array( $order->get_meta( '_stripe_upe_payment_type' ), [ 'boleto', 'oxxo' ] );
+		$payment_type_meta  = $order->get_meta( '_stripe_upe_payment_type' );
+		$is_voucher_payment = in_array( $payment_type_meta, WC_Stripe_Payment_Methods::VOUCHER_PAYMENT_METHODS, true );
+		$is_wallet_payment  = in_array( $payment_type_meta, WC_Stripe_Payment_Methods::WALLET_PAYMENT_METHODS, true );
 
 		switch ( $notification->type ) {
 			case 'payment_intent.requires_action':
+				do_action( 'wc_gateway_stripe_process_payment_intent_requires_action', $order, $notification->data->object );
+
 				if ( $is_voucher_payment ) {
 					$order->update_status( 'on-hold', __( 'Awaiting payment.', 'woocommerce-gateway-stripe' ) );
 					wc_reduce_stock_levels( $order_id );
@@ -872,22 +946,35 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 				break;
 			case 'payment_intent.succeeded':
 			case 'payment_intent.amount_capturable_updated':
-				$charge = $this->get_latest_charge_from_intent( $intent );
-
 				WC_Stripe_Logger::log( "Stripe PaymentIntent $intent->id succeeded for order $order_id" );
 
-				// TODO: This is a stop-gap to fix a critical issue, see
-				// https://github.com/woocommerce/woocommerce-gateway-stripe/issues/2536. It would
-				// be better if we removed the need for additional meta data in favor of refactoring
-				// this part of the payment processing.
-				if ( $order->get_meta( '_stripe_upe_waiting_for_redirect' ) ?? false ) {
-					return;
+				$process_webhook_async = apply_filters( 'wc_stripe_process_payment_intent_webhook_async', true, $order, $intent, $notification );
+				$is_awaiting_action    = $order->get_meta( '_stripe_upe_waiting_for_redirect' ) ?? false;
+
+				// Process the webhook now if it's for a voucher or wallet payment , or if filtered to process immediately and order is not awaiting action.
+				if ( $is_voucher_payment || $is_wallet_payment || ( ! $process_webhook_async && ! $is_awaiting_action ) ) {
+					$charge = $this->get_latest_charge_from_intent( $intent );
+
+					do_action( 'wc_gateway_stripe_process_payment', $charge, $order );
+
+					$this->process_response( $charge, $order );
+				} else {
+					WC_Stripe_Logger::log( "Processing $notification->type ($intent->id) asynchronously for order $order_id." );
+
+					// Schedule a job to check on the status of this intent.
+					$this->defer_webhook_processing(
+						$notification,
+						[
+							'order_id'  => $order_id,
+							'intent_id' => $intent->id,
+						]
+					);
+
+					if ( $is_awaiting_action ) {
+						do_action( 'wc_gateway_stripe_process_payment_intent_incomplete', $order );
+					}
 				}
 
-				do_action( 'wc_gateway_stripe_process_payment', $charge, $order );
-
-				// Process valid response.
-				$this->process_response( $charge, $order );
 				break;
 			default:
 				if ( $is_voucher_payment && 'payment_intent.payment_failed' === $notification->type ) {
@@ -901,7 +988,10 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 				/* translators: 1) The error message that was received from Stripe. */
 				$message = sprintf( __( 'Stripe SCA authentication failed. Reason: %s', 'woocommerce-gateway-stripe' ), $error_message );
 
+				$status_update = [];
 				if ( ! $order->get_meta( '_stripe_status_final', false ) ) {
+					$status_update['from'] = $order->get_status();
+					$status_update['to']   = 'failed';
 					$order->update_status( 'failed', $message );
 				} else {
 					$order->add_order_note( $message );
@@ -909,7 +999,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 
 				do_action( 'wc_gateway_stripe_process_webhook_payment_error', $order, $notification );
 
-				$this->send_failed_order_email( $order_id );
+				$this->send_failed_order_email( $order_id, $status_update );
 				break;
 		}
 
@@ -952,16 +1042,110 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 			/* translators: 1) The error message that was received from Stripe. */
 			$message = sprintf( __( 'Stripe SCA authentication failed. Reason: %s', 'woocommerce-gateway-stripe' ), $error_message );
 
+			$status_update = [];
 			if ( ! $order->get_meta( '_stripe_status_final', false ) ) {
+				$status_update['from'] = $order->get_status();
+				$status_update['to']   = 'failed';
 				$order->update_status( 'failed', $message );
 			} else {
 				$order->add_order_note( $message );
 			}
 
-			$this->send_failed_order_email( $order_id );
+			$this->send_failed_order_email( $order_id, $status_update );
 		}
 
 		$this->unlock_order_payment( $order );
+	}
+
+	/**
+	 * Schedules a job to run in the future to check on the status of a webhook.
+	 *
+	 * Each Webhook type which is deferred should be supported by @see process_deferred_webhook().
+	 *
+	 * @param stdClass $webhook_notification The webhook payload received from Stripe.
+	 * @param array    $additional_data      Additional data to pass to the scheduled job.
+	 */
+	protected function defer_webhook_processing( $webhook_notification, $additional_data ) {
+		$this->action_scheduler_service->schedule_job(
+			time() + $this->deferred_webhook_delay,
+			$this->deferred_webhook_action,
+			[
+				'type' => $webhook_notification->type,
+				'data' => $additional_data,
+			]
+		);
+	}
+
+	/**
+	 * Processes a deferred webhook event.
+	 *
+	 * Deferred webhooks are scheduled by @see defer_webhook_processing().
+	 *
+	 * @param string $webhook_type    The webhook event name/type.
+	 * @param array  $additional_data Additional data passed to the scheduled job.
+	 */
+	public function process_deferred_webhook( $webhook_type, $additional_data ) {
+		try {
+			switch ( $webhook_type ) {
+				case 'payment_intent.succeeded':
+				case 'payment_intent.amount_capturable_updated':
+					$order     = isset( $additional_data['order_id'] ) ? wc_get_order( $additional_data['order_id'] ) : null;
+					$intent_id = $additional_data['intent_id'] ?? '';
+
+					if ( empty( $order ) ) {
+						throw new Exception( "Missing required data. 'order_id' is invalid or not found for the deferred '{$webhook_type}' event." );
+					}
+
+					if ( empty( $intent_id ) ) {
+						throw new Exception( "Missing required data. 'intent_id' is missing for the deferred '{$webhook_type}' event." );
+					}
+
+					// Check if the order is still in a valid state to process the webhook.
+					if ( ! $order->has_status( apply_filters( 'wc_stripe_allowed_payment_processing_statuses', [ 'pending', 'failed' ], $order ) ) ) {
+						WC_Stripe_Logger::log( "Skipped processing deferred webhook for Stripe PaymentIntent {$intent_id} for order {$order->get_id()} - payment already complete." );
+						return;
+					}
+
+					$this->handle_deferred_payment_intent_succeeded( $order, $intent_id );
+					break;
+				default:
+					throw new Exception( "Unsupported webhook type: {$webhook_type}" );
+					break;
+			}
+		} catch ( Exception $e ) {
+			WC_Stripe_Logger::log( 'Error processing deferred webhook: ' . $e->getMessage() );
+
+			// This will be caught by Action Scheduler and logged as an error.
+			throw $e;
+		}
+	}
+
+	/**
+	 * Handles a deferred payment_intent.succeeded event.
+	 *
+	 * @param WC_Order $order     The order object.
+	 * @param string   $intent_id The payment intent ID.
+	 */
+	protected function handle_deferred_payment_intent_succeeded( $order, $intent_id ) {
+		$intent = $this->get_intent_from_order( $order );
+
+		if ( ! $intent || $intent->id !== $intent_id ) {
+			WC_Stripe_Logger::log( "Skipped processing deferred webhook for Stripe PaymentIntent {$intent_id} for order {$order->get_id()} - intent ID stored on order ({$intent->id}) doesn't match." );
+			return;
+		}
+
+		$charge = $this->get_latest_charge_from_intent( $intent );
+
+		if ( ! $charge ) {
+			WC_Stripe_Logger::log( "Skipped processing deferred webhook for Stripe PaymentIntent {$intent_id} for order {$order->get_id()} - no charge found." );
+			return;
+		}
+
+		WC_Stripe_Logger::log( "Processing Stripe PaymentIntent {$intent_id} for order {$order->get_id()} via deferred webhook." );
+
+		do_action( 'wc_gateway_stripe_process_payment', $charge, $order );
+		$this->process_response( $charge, $order );
+
 	}
 
 	/**
@@ -988,6 +1172,7 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 				break;
 
 			case 'charge.failed':
+			case 'charge.expired':
 				$this->process_webhook_charge_failed( $notification );
 				break;
 
@@ -1031,6 +1216,43 @@ class WC_Stripe_Webhook_Handler extends WC_Stripe_Payment_Gateway {
 				$this->process_setup_intent( $notification );
 
 		}
+	}
+
+	/**
+	 * Fetches an order from a payment intent.
+	 *
+	 * @param stdClass $intent The Stripe PaymentIntent object.
+	 * @return WC_Order|false The order object, or false if not found.
+	 */
+	private function get_order_from_intent( $intent ) {
+		// Attempt to get the order from the intent metadata.
+		if ( isset( $intent->metadata->signature ) ) {
+			$signature = wc_clean( $intent->metadata->signature );
+			$data      = explode( ':', $signature );
+
+			// Verify we received the order ID and signature (hash).
+			$order = isset( $data[0], $data[1] ) ? wc_get_order( absint( $data[0] ) ) : false;
+
+			if ( $order ) {
+				$intent_id = WC_Stripe_Helper::get_intent_id_from_order( $order );
+
+				// Return the order if the intent ID matches.
+				if ( $intent->id === $intent_id ) {
+					return $order;
+				}
+
+				/**
+				 * If the order has no intent ID stored, we may have failed to store it during the initial payment request.
+				 * Confirm that the signature matches the order, otherwise fall back to finding the order via the intent ID.
+				 */
+				if ( empty( $intent_id ) && $this->get_order_signature( $order ) === $signature ) {
+					return $order;
+				}
+			}
+		}
+
+		// Fall back to finding the order via the intent ID.
+		return WC_Stripe_Helper::get_order_by_intent_id( $intent->id );
 	}
 }
 

@@ -20,7 +20,7 @@ class WC_Payment_Token_Link extends WC_Payment_Token {
 	 *
 	 * @var string
 	 */
-	protected $type = 'link';
+	protected $type = WC_Stripe_Payment_Methods::LINK;
 
 	/**
 	 * Stores Link payment token data.
@@ -28,7 +28,7 @@ class WC_Payment_Token_Link extends WC_Payment_Token {
 	 * @var array
 	 */
 	protected $extra_data = [
-		'email'  => '',
+		'email' => '',
 	];
 
 	/**
@@ -40,7 +40,7 @@ class WC_Payment_Token_Link extends WC_Payment_Token {
 	public function get_display_name( $deprecated = '' ) {
 		$display = sprintf(
 			/* translators: customer email */
-			__( 'Stripe Link email %s', 'woocommerce-gateway-stripe' ),
+			__( 'Stripe Link (%s)', 'woocommerce-gateway-stripe' ),
 			$this->get_email()
 		);
 

@@ -14,7 +14,7 @@ class WC_Stripe_API {
 	 * Stripe API Endpoint
 	 */
 	const ENDPOINT           = 'https://api.stripe.com/v1/';
-	const STRIPE_API_VERSION = '2019-09-09';
+	const STRIPE_API_VERSION = '2024-06-20';
 
 	/**
 	 * Secret API Key.
@@ -39,15 +39,26 @@ class WC_Stripe_API {
 	 */
 	public static function get_secret_key() {
 		if ( ! self::$secret_key ) {
-			$options         = get_option( 'woocommerce_stripe_settings' );
-			$secret_key      = $options['secret_key'] ?? '';
-			$test_secret_key = $options['test_secret_key'] ?? '';
-
-			if ( isset( $options['testmode'] ) ) {
-				self::set_secret_key( 'yes' === $options['testmode'] ? $test_secret_key : $secret_key );
-			}
+			self::set_secret_key_for_mode();
 		}
 		return self::$secret_key;
+	}
+
+	/**
+	 * Set secret key based on mode.
+	 *
+	 * @param string|null $mode Optional. The mode to set the secret key for. 'live' or 'test'. Default will set the secret for the currently active mode.
+	 */
+	public static function set_secret_key_for_mode( $mode = null ) {
+		$options         = WC_Stripe_Helper::get_stripe_settings();
+		$secret_key      = $options['secret_key'] ?? '';
+		$test_secret_key = $options['test_secret_key'] ?? '';
+
+		if ( ! in_array( $mode, [ 'test', 'live' ], true ) ) {
+			$mode = WC_Stripe_Mode::is_test() ? 'test' : 'live';
+		}
+
+		self::set_secret_key( 'test' === $mode ? $test_secret_key : $secret_key );
 	}
 
 	/**
@@ -135,6 +146,12 @@ class WC_Stripe_API {
 			]
 		);
 
+		$response_headers = wp_remote_retrieve_headers( $response );
+		// Log the stripe version in the response headers, if present.
+		if ( isset( $response_headers['stripe-version'] ) ) {
+			WC_Stripe_Logger::log( "{$api} response with stripe-version: " . $response_headers['stripe-version'] );
+		}
+
 		if ( is_wp_error( $response ) || empty( $response['body'] ) ) {
 			WC_Stripe_Logger::log(
 				'Error Response: ' . print_r( $response, true ) . PHP_EOL . PHP_EOL . 'Failed request: ' . print_r(
@@ -152,7 +169,7 @@ class WC_Stripe_API {
 
 		if ( $with_headers ) {
 			return [
-				'headers' => wp_remote_retrieve_headers( $response ),
+				'headers' => $response_headers,
 				'body'    => json_decode( $response['body'] ),
 			];
 		}
@@ -208,7 +225,7 @@ class WC_Stripe_API {
 		// 2. Do not add level3 data if there's a transient indicating that level3 was
 		// not accepted by Stripe in the past for this account.
 		// 3. Do not try to add level3 data if merchant is not based in the US.
-		// https://stripe.com/docs/level3#level-iii-usage-requirements
+		// https://docs.stripe.com/level3#level-iii-usage-requirements
 		// (Needs to be authenticated with a level3 gated account to see above docs).
 		if (
 			empty( $level3_data ) ||
@@ -292,6 +309,23 @@ class WC_Stripe_API {
 	}
 
 	/**
+	 * Update payment method data.
+	 *
+	 * @param string $payment_method_id   Payment method ID.
+	 * @param array  $payment_method_data Payment method updated data.
+	 *
+	 * @return array Payment method details.
+	 *
+	 * @throws WC_Stripe_Exception If payment method update fails.
+	 */
+	public static function update_payment_method( $payment_method_id, $payment_method_data = [] ) {
+		return self::request(
+			$payment_method_data,
+			'payment_methods/' . $payment_method_id
+		);
+	}
+
+	/**
 	 * Attaches a payment method to the given customer.
 	 *
 	 * @param string $customer_id        The ID of the customer the payment method should be attached to.
@@ -325,6 +359,10 @@ class WC_Stripe_API {
 	 * @throws WC_Stripe_Exception
 	 */
 	public static function detach_payment_method_from_customer( string $customer_id, string $payment_method_id ) {
+		if ( ! self::should_detach_payment_method_from_customer() ) {
+			return [];
+		}
+
 		$payment_method_id = sanitize_text_field( $payment_method_id );
 
 		// Sources and Payment Methods need different API calls.
@@ -340,5 +378,34 @@ class WC_Stripe_API {
 			[],
 			'payment_methods/' . $payment_method_id . '/detach'
 		);
+	}
+
+	/**
+	 * Checks if a payment method should be detached from a customer.
+	 *
+	 * If the site is a staging/local/development site in live mode, we should not detach the payment method
+	 * from the customer to avoid detaching it from the production site.
+	 *
+	 * @return bool True if the payment should be detached, false otherwise.
+	 */
+	public static function should_detach_payment_method_from_customer() {
+		// If we are in test mode, we can always detach the payment method.
+		if ( WC_Stripe_Mode::is_test() ) {
+			return true;
+		}
+
+		// Return true for the delete user request from the admin dashboard when the site is a production site
+		// and return false when the site is a staging/local/development site.
+		// This is to avoid detaching the payment method from the live production site.
+		// Requests coming from the customer account page i.e delete payment method, are not affected by this and returns true.
+		if ( is_admin() ) {
+			if ( 'production' === wp_get_environment_type() ) {
+				return true;
+			} else {
+				return false;
+			}
+		}
+
+		return true;
 	}
 }

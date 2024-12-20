@@ -1,12 +1,17 @@
 import { __, sprintf } from '@wordpress/i18n';
-import React, { useContext, useState } from 'react';
+import React, { useState, useContext } from 'react';
 import styled from '@emotion/styled';
 import { CheckboxControl, VisuallyHidden } from '@wordpress/components';
 import { Icon, info } from '@wordpress/icons';
 import UpeToggleContext from '../upe-toggle/context';
 import RemoveMethodConfirmationModal from './remove-method-confirmation-modal';
-import { useEnabledPaymentMethodIds, useManualCapture } from 'wcstripe/data';
+import {
+	useEnabledPaymentMethodIds,
+	useManualCapture,
+	useIsStripeEnabled,
+} from 'wcstripe/data';
 import Tooltip from 'wcstripe/components/tooltip';
+import { PAYMENT_METHOD_CARD } from 'wcstripe/stripe-utils/constants';
 
 const StyledCheckbox = styled( CheckboxControl )`
 	.components-base-control__field {
@@ -15,16 +20,20 @@ const StyledCheckbox = styled( CheckboxControl )`
 `;
 
 const AlertIcon = styled( Icon )`
-	fill: #ffc83f;
+	fill: #f0b849;
 `;
 
 const IconWrapper = styled.span`
-	margin-right: 12px;
+	margin-right: 8px;
 	flex-shrink: 0;
 `;
 
-const PaymentMethodCheckbox = ( { id, label, isAllowingManualCapture } ) => {
-	const { isUpeEnabled } = useContext( UpeToggleContext );
+const PaymentMethodCheckbox = ( {
+	id,
+	label,
+	isAllowingManualCapture,
+	disabled,
+} ) => {
 	const [ isManualCaptureEnabled ] = useManualCapture();
 	const [ isConfirmationModalOpen, setIsConfirmationModalOpen ] = useState(
 		false
@@ -33,11 +42,22 @@ const PaymentMethodCheckbox = ( { id, label, isAllowingManualCapture } ) => {
 		enabledPaymentMethods,
 		setEnabledPaymentMethods,
 	] = useEnabledPaymentMethodIds();
+	const [ , setIsStripeEnabled ] = useIsStripeEnabled();
+	const { isUpeEnabled } = useContext( UpeToggleContext );
 
 	const handleCheckboxChange = ( hasBeenChecked ) => {
+		if ( disabled ) {
+			return;
+		}
 		if ( ! hasBeenChecked ) {
 			setIsConfirmationModalOpen( true );
 			return;
+		}
+
+		// In legacy mode (UPE disabled), Stripe refers to the card payment method.
+		// So if the card payment method is enabled, Stripe should be enabled.
+		if ( id === PAYMENT_METHOD_CARD && ! isUpeEnabled ) {
+			setIsStripeEnabled( true );
 		}
 
 		setEnabledPaymentMethods( [ ...enabledPaymentMethods, id ] );
@@ -48,11 +68,13 @@ const PaymentMethodCheckbox = ( { id, label, isAllowingManualCapture } ) => {
 		setEnabledPaymentMethods(
 			enabledPaymentMethods.filter( ( m ) => m !== id )
 		);
-	};
 
-	if ( ! isUpeEnabled ) {
-		return null;
-	}
+		// In legacy mode (UPE disabled), Stripe refers to the card payment method.
+		// So if the card payment method is disabled, Stripe should be disabled.
+		if ( id === PAYMENT_METHOD_CARD && ! isUpeEnabled ) {
+			setIsStripeEnabled( false );
+		}
+	};
 
 	return (
 		<>
@@ -85,7 +107,10 @@ const PaymentMethodCheckbox = ( { id, label, isAllowingManualCapture } ) => {
 				<StyledCheckbox
 					label={ <VisuallyHidden>{ label }</VisuallyHidden> }
 					onChange={ handleCheckboxChange }
-					checked={ enabledPaymentMethods.includes( id ) }
+					checked={
+						disabled ? false : enabledPaymentMethods.includes( id )
+					}
+					disabled={ disabled }
 				/>
 			) }
 			{ isConfirmationModalOpen && (

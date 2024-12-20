@@ -1,15 +1,18 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import PaymentsAndTransactionsSection from '..';
 import { useAccount } from 'wcstripe/data/account';
 import {
 	useManualCapture,
 	useSavedCards,
+	useEnabledPaymentMethodIds,
 	useIsShortAccountStatementEnabled,
 	useSeparateCardForm,
-	useAccountStatementDescriptor,
-	useShortAccountStatementDescriptor,
 	useGetSavingError,
 } from 'wcstripe/data';
+import {
+	PAYMENT_METHOD_CARD,
+	PAYMENT_METHOD_CASHAPP,
+} from 'wcstripe/stripe-utils/constants';
 
 jest.mock( 'wcstripe/data/account', () => ( {
 	useAccount: jest.fn(),
@@ -20,9 +23,8 @@ jest.mock( 'wcstripe/data', () => ( {
 	useSavedCards: jest.fn(),
 	useIsShortAccountStatementEnabled: jest.fn(),
 	useSeparateCardForm: jest.fn(),
-	useAccountStatementDescriptor: jest.fn(),
-	useShortAccountStatementDescriptor: jest.fn(),
 	useGetSavingError: jest.fn(),
+	useEnabledPaymentMethodIds: jest.fn(),
 } ) );
 
 describe( 'PaymentsAndTransactionsSection', () => {
@@ -34,77 +36,34 @@ describe( 'PaymentsAndTransactionsSection', () => {
 			jest.fn(),
 		] );
 		useSeparateCardForm.mockReturnValue( [ true, jest.fn() ] );
-		useAccountStatementDescriptor.mockReturnValue( [
-			'WOOTESTING, LTD',
+		useEnabledPaymentMethodIds.mockReturnValue( [
+			[ PAYMENT_METHOD_CARD ],
 			jest.fn(),
 		] );
-		useShortAccountStatementDescriptor.mockReturnValue( [
-			'WOOTESTING',
-			jest.fn(),
-		] );
-		useGetSavingError.mockReturnValue( null );
-		useAccount.mockReturnValue( { data: {} } );
-	} );
-
-	it( 'displays the length of the bank statement input', () => {
-		const updateAccountStatementDescriptor = jest.fn();
-		useAccountStatementDescriptor.mockReturnValue( [
-			'WOOTESTING, LTD',
-			updateAccountStatementDescriptor,
-		] );
-		render( <PaymentsAndTransactionsSection /> );
-
-		expect( screen.getByText( '15 / 22' ) ).toBeInTheDocument();
-
-		fireEvent.change( screen.getByLabelText( 'Full bank statement' ), {
-			target: { value: 'New Statement Name' },
+		useAccount.mockReturnValue( {
+			data: {
+				account: {
+					settings: {
+						payments: { statement_descriptor: 'WOOTESTING, LTD' },
+						card_payments: {
+							statement_descriptor_prefix: 'WOOTEST',
+						},
+					},
+				},
+			},
 		} );
 
-		expect( updateAccountStatementDescriptor ).toHaveBeenCalledWith(
-			'New Statement Name'
-		);
-	} );
-
-	it( 'shows the shortened bank statement input', () => {
-		useIsShortAccountStatementEnabled.mockReturnValue( [
-			true,
-			jest.fn(),
-		] );
-		const updateShortAccountStatementDescriptor = jest.fn();
-		useShortAccountStatementDescriptor.mockReturnValue( [
-			'WOOTEST',
-			updateShortAccountStatementDescriptor,
-		] );
-		render( <PaymentsAndTransactionsSection /> );
-
-		expect( screen.getByText( '7 / 10' ) ).toBeInTheDocument();
-
-		fireEvent.change(
-			screen.getByLabelText( 'Shortened customer bank statement' ),
-			{
-				target: { value: 'WOOTESTING' },
-			}
-		);
-
-		expect( updateShortAccountStatementDescriptor ).toHaveBeenCalledWith(
-			'WOOTESTING'
-		);
+		useGetSavingError.mockReturnValue( null );
 	} );
 
 	it( 'shows the full bank statement preview', () => {
-		const updateAccountStatementDescriptor = jest.fn();
-		const mockValue = 'WOOTESTING, LTD';
-		useAccountStatementDescriptor.mockReturnValue( [
-			mockValue,
-			updateAccountStatementDescriptor,
-		] );
 		render( <PaymentsAndTransactionsSection /> );
 
 		expect(
 			document.querySelector(
 				'.full-bank-statement .transaction-detail.description'
 			)
-		).toHaveTextContent( mockValue );
+		).toHaveTextContent( 'WOOTESTING, LTD' );
 	} );
 
 	it( 'shows the shortened customer bank statement preview when useIsShortAccountStatementEnabled is true', () => {
@@ -112,19 +71,20 @@ describe( 'PaymentsAndTransactionsSection', () => {
 			true,
 			jest.fn(),
 		] );
-		const updateShortAccountStatementDescriptor = jest.fn();
-		const mockValue = 'WOOTEST';
-		useShortAccountStatementDescriptor.mockReturnValue( [
-			mockValue,
-			updateShortAccountStatementDescriptor,
-		] );
+
 		render( <PaymentsAndTransactionsSection /> );
 
 		expect(
 			document.querySelector(
 				'.shortened-bank-statement .transaction-detail.description'
 			)
-		).toHaveTextContent( `${ mockValue }* #123456` );
+		).toHaveTextContent( 'WOOTEST* W #123456' );
+
+		expect(
+			document.querySelector(
+				'.full-bank-statement .statement-icon-and-title'
+			)
+		).toHaveTextContent( 'All Other Payment Methods' );
 	} );
 
 	it( 'should not show the shortened customer bank statement preview when useIsShortAccountStatementEnabled is false', () => {
@@ -132,12 +92,7 @@ describe( 'PaymentsAndTransactionsSection', () => {
 			false,
 			jest.fn(),
 		] );
-		const updateShortAccountStatementDescriptor = jest.fn();
-		const mockValue = 'WOOTEST';
-		useShortAccountStatementDescriptor.mockReturnValue( [
-			mockValue,
-			updateShortAccountStatementDescriptor,
-		] );
+
 		render( <PaymentsAndTransactionsSection /> );
 
 		expect(
@@ -147,93 +102,34 @@ describe( 'PaymentsAndTransactionsSection', () => {
 		).toBe( null );
 	} );
 
-	it( 'displays the error message for the statement input', () => {
-		useAccountStatementDescriptor.mockReturnValue( [ 'WOO', jest.fn() ] );
-		useGetSavingError.mockReturnValue( {
-			code: 'rest_invalid_param',
-			message: 'Invalid parameter(s): statement_descriptor',
-			data: {
-				status: 400,
-				params: {
-					statement_descriptor:
-						'Customer bank statement is invalid. No special characters: \' " * &lt; &gt;',
-				},
-				details: {
-					statement_descriptor: {
-						code: 'rest_invalid_pattern',
-						message:
-							'Customer bank statement is invalid. No special characters: \' " * &lt; &gt;',
-						data: null,
-					},
-				},
-			},
-		} );
-
-		render( <PaymentsAndTransactionsSection /> );
-
-		expect(
-			screen.getByText(
-				`Customer bank statement is invalid. No special characters: ' " * < >`
-			)
-		).toBeInTheDocument();
-	} );
-
-	it( 'displays the error message for the short statement input', () => {
-		useShortAccountStatementDescriptor.mockReturnValue( [
-			'WOO',
-			jest.fn(),
-		] );
+	it( 'should display a third statement preview when Cash App Pay is enabled', () => {
 		useIsShortAccountStatementEnabled.mockReturnValue( [
 			true,
 			jest.fn(),
 		] );
-		useGetSavingError.mockReturnValue( {
-			code: 'rest_invalid_param',
-			message: 'Invalid parameter(s): short_statement_descriptor',
-			data: {
-				status: 400,
-				params: {
-					short_statement_descriptor:
-						'Customer bank statement is invalid. No special characters: \' " * &lt; &gt;',
-				},
-				details: {
-					short_statement_descriptor: {
-						code: 'rest_invalid_pattern',
-						message:
-							'Customer bank statement is invalid. No special characters: \' " * &lt; &gt;',
-						data: null,
-					},
-				},
-			},
-		} );
-
-		render( <PaymentsAndTransactionsSection /> );
-
-		expect(
-			screen.getByText(
-				`Customer bank statement is invalid. No special characters: ' " * < >`
-			)
-		).toBeInTheDocument();
-	} );
-
-	it( "shows the account's statement descriptor placeholder", () => {
-		const mockValue = 'WOOTESTING, LTD';
-
-		useAccount.mockReturnValue( {
-			data: {
-				account: {
-					settings: { payments: { statement_descriptor: mockValue } },
-				},
-			},
-		} );
-		useIsShortAccountStatementEnabled.mockReturnValue( [
-			true,
+		useEnabledPaymentMethodIds.mockReturnValue( [
+			[ PAYMENT_METHOD_CARD, PAYMENT_METHOD_CASHAPP ],
 			jest.fn(),
 		] );
+
 		render( <PaymentsAndTransactionsSection /> );
 
 		expect(
-			screen.queryByText( 'Full bank statement' ).nextElementSibling
-		).toHaveAttribute( 'placeholder', mockValue );
+			document.querySelector(
+				'.shortened-bank-statement .transaction-detail.description'
+			)
+		).toHaveTextContent( 'WOOTEST* W #123456' );
+
+		expect(
+			document.querySelectorAll(
+				'.full-bank-statement .statement-icon-and-title'
+			)[ 0 ]
+		).toHaveTextContent( 'Cash App Payments' );
+
+		expect(
+			document.querySelectorAll(
+				'.full-bank-statement .statement-icon-and-title'
+			)[ 1 ]
+		).toHaveTextContent( 'All Other Payment Methods' );
 	} );
 } );

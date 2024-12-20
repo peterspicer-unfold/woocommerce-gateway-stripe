@@ -71,10 +71,12 @@ class WC_Stripe_Admin_Notices {
 			echo wp_kses(
 				$notice['message'],
 				[
-					'a' => [
+					'a'      => [
 						'href'   => [],
 						'target' => [],
 					],
+					'strong' => [],
+					'br'     => [],
 				]
 			);
 			echo '</p></div>';
@@ -89,17 +91,17 @@ class WC_Stripe_Admin_Notices {
 	 */
 	public function get_payment_methods() {
 		return [
-			'alipay'     => 'WC_Gateway_Stripe_Alipay',
-			'bancontact' => 'WC_Gateway_Stripe_Bancontact',
-			'eps'        => 'WC_Gateway_Stripe_EPS',
-			'giropay'    => 'WC_Gateway_Stripe_Giropay',
-			'ideal'      => 'WC_Gateway_Stripe_Ideal',
-			'multibanco' => 'WC_Gateway_Stripe_Multibanco',
-			'p24'        => 'WC_Gateway_Stripe_p24',
-			'sepa'       => 'WC_Gateway_Stripe_Sepa',
-			'sofort'     => 'WC_Gateway_Stripe_Sofort',
-			'boleto'     => 'WC_Gateway_Stripe_Boleto',
-			'oxxo'       => 'WC_Gateway_Stripe_Oxxo',
+			WC_Stripe_Payment_Methods::ALIPAY     => WC_Gateway_Stripe_Alipay::class,
+			WC_Stripe_Payment_Methods::BANCONTACT => WC_Gateway_Stripe_Bancontact::class,
+			WC_Stripe_Payment_Methods::EPS        => WC_Gateway_Stripe_Eps::class,
+			WC_Stripe_Payment_Methods::GIROPAY    => WC_Gateway_Stripe_Giropay::class,
+			WC_Stripe_Payment_Methods::IDEAL      => WC_Gateway_Stripe_Ideal::class,
+			WC_Stripe_Payment_Methods::MULTIBANCO => WC_Gateway_Stripe_Multibanco::class,
+			WC_Stripe_Payment_Methods::P24        => WC_Gateway_Stripe_P24::class,
+			WC_Stripe_Payment_Methods::SEPA       => WC_Gateway_Stripe_Sepa::class,
+			WC_Stripe_Payment_Methods::SOFORT     => WC_Gateway_Stripe_Sofort::class,
+			WC_Stripe_Payment_Methods::BOLETO     => WC_Gateway_Stripe_Boleto::class,
+			WC_Stripe_Payment_Methods::OXXO       => WC_Gateway_Stripe_Oxxo::class,
 		];
 	}
 
@@ -120,8 +122,8 @@ class WC_Stripe_Admin_Notices {
 		$show_curl_notice    = get_option( 'wc_stripe_show_curl_notice' );
 		$show_sca_notice     = get_option( 'wc_stripe_show_sca_notice' );
 		$changed_keys_notice = get_option( 'wc_stripe_show_changed_keys_notice' );
-		$options             = get_option( 'woocommerce_stripe_settings' );
-		$testmode            = ( isset( $options['testmode'] ) && 'yes' === $options['testmode'] ) ? true : false;
+		$options             = WC_Stripe_Helper::get_stripe_settings();
+		$testmode            = WC_Stripe_Mode::is_test();
 		$test_pub_key        = isset( $options['test_publishable_key'] ) ? $options['test_publishable_key'] : '';
 		$test_secret_key     = isset( $options['test_secret_key'] ) ? $options['test_secret_key'] : '';
 		$live_pub_key        = isset( $options['publishable_key'] ) ? $options['publishable_key'] : '';
@@ -129,8 +131,25 @@ class WC_Stripe_Admin_Notices {
 		$three_d_secure      = isset( $options['three_d_secure'] ) && 'yes' === $options['three_d_secure'];
 
 		if ( isset( $options['enabled'] ) && 'yes' === $options['enabled'] ) {
+			// Check if Stripe is in test mode.
+			if ( $testmode ) {
+				// phpcs:ignore
+				$is_stripe_settings_page = isset( $_GET['page'], $_GET['section'] ) && 'wc-settings' === $_GET['page'] && 0 === strpos( $_GET['section'], 'stripe' );
+
+				if ( $is_stripe_settings_page ) {
+					$testmode_notice_message = sprintf(
+						/* translators: 1) HTML strong open tag 2) HTML strong closing tag */
+						__( '%1$sTest mode active:%2$s All transactions are simulated. Customers can\'t make real purchases through Stripe.', 'woocommerce-gateway-stripe' ),
+						'<strong>',
+						'</strong>'
+					);
+
+					$this->add_admin_notice( 'mode', 'notice notice-warning', $testmode_notice_message );
+				}
+			}
+
 			if ( empty( $show_3ds_notice ) && $three_d_secure ) {
-				$url = 'https://stripe.com/docs/payments/3d-secure#three-ds-radar';
+				$url = 'https://docs.stripe.com/payments/3d-secure/authentication-flow#three-ds-radar';
 
 				$message = sprintf(
 				/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
@@ -146,7 +165,7 @@ class WC_Stripe_Admin_Notices {
 				$message = sprintf(
 				/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
 					__( 'WooCommerce Stripe - We recently made changes to Stripe that may impact the appearance of your checkout. If your checkout has changed unexpectedly, please follow these %1$sinstructions%2$s to fix.', 'woocommerce-gateway-stripe' ),
-					'<a href="https://woocommerce.com/document/stripe/#new-checkout-experience" target="_blank">',
+					'<a href="https://woocommerce.com/document/stripe/admin-experience/new-checkout-experience/" target="_blank">',
 					'</a>'
 				);
 
@@ -192,7 +211,7 @@ class WC_Stripe_Admin_Notices {
 
 					$notice_message = sprintf(
 					/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
-						__( 'Stripe is almost ready. To get started, %1$sset your Stripe account keys%2$s.', 'woocommerce-gateway-stripe' ),
+						__( 'Stripe is almost ready. To get started, go to %1$syour settings%2$s and use the <strong>Configure Connection</strong> button to connect.', 'woocommerce-gateway-stripe' ),
 						'<a href="' . $setting_link . '">',
 						'</a>'
 					);
@@ -208,7 +227,7 @@ class WC_Stripe_Admin_Notices {
 
 						$notice_message = sprintf(
 						/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
-							__( 'Stripe is in test mode however your test keys may not be valid. Test keys start with pk_test and sk_test or rk_test. Please go to your settings and, %1$sset your Stripe account keys%2$s.', 'woocommerce-gateway-stripe' ),
+							__( 'Stripe is in test mode however your API keys may not be valid. Please go to %1$syour settings%2$s and use the <strong>Configure Connection</strong> button to reconnect.', 'woocommerce-gateway-stripe' ),
 							'<a href="' . $setting_link . '">',
 							'</a>'
 						);
@@ -223,7 +242,7 @@ class WC_Stripe_Admin_Notices {
 
 						$message = sprintf(
 						/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
-							__( 'Stripe is in live mode however your live keys may not be valid. Live keys start with pk_live and sk_live or rk_live. Please go to your settings and, %1$sset your Stripe account keys%2$s.', 'woocommerce-gateway-stripe' ),
+							__( 'Stripe is in live mode however your API keys may not be valid. Please go to %1$syour settings%2$s and use the <strong>Configure Connection</strong> button to reconnect.', 'woocommerce-gateway-stripe' ),
 							'<a href="' . $setting_link . '">',
 							'</a>'
 						);
@@ -239,7 +258,7 @@ class WC_Stripe_Admin_Notices {
 
 					$message = sprintf(
 					/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
-						__( 'Your customers cannot use Stripe on checkout, because we couldn\'t connect to your account. Please go to your settings and, %1$sset your Stripe account keys%2$s.', 'woocommerce-gateway-stripe' ),
+						__( 'Your customers cannot use Stripe on checkout, because we couldn\'t connect to your account. Please go to %1$syour settings%2$s and use the <strong>Configure Connection</strong> button to connect.', 'woocommerce-gateway-stripe' ),
 						'<a href="' . $setting_link . '">',
 						'</a>'
 					);
@@ -276,8 +295,8 @@ class WC_Stripe_Admin_Notices {
 			if ( 'yes' === $changed_keys_notice ) {
 				$message = sprintf(
 				/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
-					__( 'The public and/or secret keys for the Stripe gateway have been changed. This might cause errors for existing customers and saved payment methods. %1$sClick here to learn more%2$s.', 'woocommerce-gateway-stripe' ),
-					'<a href="https://woocommerce.com/document/stripe-fixing-customer-errors" target="_blank">',
+					__( 'Credentials used for the Stripe gateway have been changed. This might cause errors for existing customers and saved payment methods. %1$sClick here to learn more%2$s.', 'woocommerce-gateway-stripe' ),
+					'<a href="https://woocommerce.com/document/stripe/customization/database-cleanup/" target="_blank">',
 					'</a>'
 				);
 
@@ -294,18 +313,35 @@ class WC_Stripe_Admin_Notices {
 	public function payment_methods_check_environment() {
 		$payment_methods = $this->get_payment_methods();
 
-		foreach ( $payment_methods as $method => $class ) {
-			$show_notice = get_option( 'wc_stripe_show_' . $method . '_notice' );
-			$gateway     = new $class();
+		// phpcs:ignore
+		$is_stripe_settings_page = isset( $_GET['page'], $_GET['section'] ) && 'wc-settings' === $_GET['page'] && 0 === strpos( $_GET['section'], 'stripe' );
+		$currency_messages       = '';
 
-			if ( 'yes' !== $gateway->enabled || 'no' === $show_notice ) {
+		foreach ( $payment_methods as $method => $class ) {
+			$gateway = new $class();
+
+			if ( 'yes' !== $gateway->enabled ) {
 				continue;
 			}
 
-			if ( ! in_array( get_woocommerce_currency(), $gateway->get_supported_currency(), true ) ) {
+			if ( 'stripe_sofort' === $gateway->id ) {
+				$message = sprintf(
+				/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
+					__( 'Sofort is being deprecated as a standalone payment method by Stripe and will continue processing Sofort payments throughout 2023 only. %1$sLearn more%2$s.', 'woocommerce-gateway-stripe' ),
+					'<a href="https://support.stripe.com/questions/sofort-is-being-deprecated-as-a-standalone-payment-method" target="_blank">',
+					'</a>'
+				);
+
+				$this->add_admin_notice( WC_Stripe_Payment_Methods::SOFORT, 'notice notice-warning', $message, false );
+			} elseif ( ! $is_stripe_settings_page && ! in_array( get_woocommerce_currency(), $gateway->get_supported_currency(), true ) ) {
 				/* translators: 1) Payment method, 2) List of supported currencies */
-				$this->add_admin_notice( $method, 'notice notice-error', sprintf( __( '%1$s is enabled - it requires store currency to be set to %2$s', 'woocommerce-gateway-stripe' ), $gateway->get_method_title(), implode( ', ', $gateway->get_supported_currency() ) ), true );
+				$currency_messages .= sprintf( __( '%1$s is enabled - it requires store currency to be set to %2$s<br>', 'woocommerce-gateway-stripe' ), $gateway->get_method_title(), implode( ', ', $gateway->get_supported_currency() ) );
 			}
+		}
+
+		$show_notice = get_option( 'wc_stripe_show_payment_methods_notice' );
+		if ( ! empty( $currency_messages && 'no' !== $show_notice ) ) {
+			$this->add_admin_notice( 'payment_methods', 'notice notice-error', $currency_messages, true );
 		}
 
 		if ( ! WC_Stripe_Feature_Flags::is_upe_preview_enabled() || ! WC_Stripe_Feature_Flags::is_upe_checkout_enabled() ) {
@@ -313,19 +349,33 @@ class WC_Stripe_Admin_Notices {
 		}
 
 		foreach ( WC_Stripe_UPE_Payment_Gateway::UPE_AVAILABLE_METHODS as $method_class ) {
-			if ( WC_Stripe_UPE_Payment_Method_CC::class === $method_class ) {
+			if ( WC_Stripe_UPE_Payment_Method_CC::class === $method_class || WC_Stripe_UPE_Payment_Method_Link::class === $method_class ) {
 				continue;
 			}
-			$method      = $method_class::STRIPE_ID;
-			$show_notice = get_option( 'wc_stripe_show_' . $method . '_upe_notice' );
-			$upe_method  = new $method_class();
-			if ( ! $upe_method->is_enabled() || 'no' === $show_notice ) {
+			$method     = $method_class::STRIPE_ID;
+			$upe_method = new $method_class();
+			if ( ! $upe_method->is_enabled() ) {
 				continue;
 			}
-			if ( ! in_array( get_woocommerce_currency(), $upe_method->get_supported_currencies(), true ) ) {
+
+			if ( WC_Stripe_Payment_Methods::SOFORT === $upe_method->get_id() ) {
+				$message = sprintf(
+				/* translators: 1) HTML anchor open tag 2) HTML anchor closing tag */
+					__( 'Sofort is being deprecated as a standalone payment method by Stripe and will continue processing Sofort payments throughout 2023 only. %1$sLearn more%2$s.', 'woocommerce-gateway-stripe' ),
+					'<a href="https://support.stripe.com/questions/sofort-is-being-deprecated-as-a-standalone-payment-method" target="_blank">',
+					'</a>'
+				);
+
+				$this->add_admin_notice( WC_Stripe_Payment_Methods::SOFORT, 'notice notice-warning', $message, false );
+			} elseif ( ! $is_stripe_settings_page && ! in_array( get_woocommerce_currency(), $upe_method->get_supported_currencies(), true ) ) {
 				/* translators: %1$s Payment method, %2$s List of supported currencies */
-				$this->add_admin_notice( $method . '_upe', 'notice notice-error', sprintf( __( '%1$s is enabled - it requires store currency to be set to %2$s', 'woocommerce-gateway-stripe' ), $upe_method->get_label(), implode( ', ', $upe_method->get_supported_currencies() ) ), true );
+				$currency_messages .= sprintf( __( '%1$s is enabled - it requires store currency to be set to %2$s<br>', 'woocommerce-gateway-stripe' ), $upe_method->get_label(), implode( ', ', $upe_method->get_supported_currencies() ) );
 			}
+		}
+
+		$show_notice = get_option( 'wc_stripe_show_upe_payment_methods_notice' );
+		if ( ! empty( $currency_messages ) && 'no' !== $show_notice ) {
+			$this->add_admin_notice( 'upe_payment_methods', 'notice notice-error', $currency_messages, true );
 		}
 	}
 
@@ -338,11 +388,11 @@ class WC_Stripe_Admin_Notices {
 	public function hide_notices() {
 		if ( isset( $_GET['wc-stripe-hide-notice'] ) && isset( $_GET['_wc_stripe_notice_nonce'] ) ) {
 			if ( ! wp_verify_nonce( wc_clean( wp_unslash( $_GET['_wc_stripe_notice_nonce'] ) ), 'wc_stripe_hide_notices_nonce' ) ) {
-				wp_die( __( 'Action failed. Please refresh the page and retry.', 'woocommerce-gateway-stripe' ) );
+				wp_die( esc_html__( 'Action failed. Please refresh the page and retry.', 'woocommerce-gateway-stripe' ) );
 			}
 
 			if ( ! current_user_can( 'manage_woocommerce' ) ) {
-				wp_die( __( 'Cheatin&#8217; huh?', 'woocommerce-gateway-stripe' ) );
+				wp_die( esc_html__( 'Cheatin&#8217; huh?', 'woocommerce-gateway-stripe' ) );
 			}
 
 			$notice = wc_clean( wp_unslash( $_GET['wc-stripe-hide-notice'] ) );
@@ -369,32 +419,11 @@ class WC_Stripe_Admin_Notices {
 				case '3ds':
 					update_option( 'wc_stripe_show_3ds_notice', 'no' );
 					break;
-				case 'alipay':
-					update_option( 'wc_stripe_show_alipay_notice', 'no' );
-					break;
-				case 'bancontact':
-					update_option( 'wc_stripe_show_bancontact_notice', 'no' );
-					break;
-				case 'eps':
-					update_option( 'wc_stripe_show_eps_notice', 'no' );
-					break;
-				case 'giropay':
-					update_option( 'wc_stripe_show_giropay_notice', 'no' );
-					break;
-				case 'ideal':
-					update_option( 'wc_stripe_show_ideal_notice', 'no' );
-					break;
-				case 'multibanco':
-					update_option( 'wc_stripe_show_multibanco_notice', 'no' );
-					break;
-				case 'p24':
-					update_option( 'wc_stripe_show_p24_notice', 'no' );
-					break;
-				case 'sepa':
-					update_option( 'wc_stripe_show_sepa_notice', 'no' );
-					break;
 				case 'sofort':
 					update_option( 'wc_stripe_show_sofort_notice', 'no' );
+					break;
+				case 'sofort':
+					update_option( 'wc_stripe_show_sofort_upe_notice', 'no' );
 					break;
 				case 'sca':
 					update_option( 'wc_stripe_show_sca_notice', 'no' );
@@ -402,10 +431,11 @@ class WC_Stripe_Admin_Notices {
 				case 'changed_keys':
 					update_option( 'wc_stripe_show_changed_keys_notice', 'no' );
 					break;
-				default:
-					if ( false !== strpos( $notice, '_upe' ) ) {
-						update_option( 'wc_stripe_show_' . $notice . '_notice', 'no' );
-					}
+				case 'payment_methods':
+					update_option( 'wc_stripe_show_payment_methods_notice', 'no' );
+					break;
+				case 'upe_payment_methods':
+					update_option( 'wc_stripe_show_upe_payment_methods_notice', 'no' );
 					break;
 			}
 		}

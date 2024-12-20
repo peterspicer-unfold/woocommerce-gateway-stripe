@@ -1,14 +1,8 @@
 import { __ } from '@wordpress/i18n';
-import CreditCardIcon from './payment-method-icons/cards';
-import GiropayIcon from './payment-method-icons/giropay';
-import SofortIcon from './payment-method-icons/sofort';
-import SepaIcon from './payment-method-icons/sepa';
-import EpsIcon from './payment-method-icons/eps';
-import BancontactIcon from './payment-method-icons/bancontact';
-import IdealIcon from './payment-method-icons/ideal';
-import P24Icon from './payment-method-icons/p24';
-import BoletoIcon from './payment-method-icons/boleto';
-import OxxoIcon from './payment-method-icons/oxxo';
+import icons from './payment-method-icons';
+
+const accountCountry =
+	window.wc_stripe_settings_params?.account_country || 'US';
 
 export default {
 	card: {
@@ -18,9 +12,8 @@ export default {
 			'Let your customers pay with major credit and debit cards without leaving your store.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: CreditCardIcon,
+		Icon: icons.card,
 		currencies: [],
-		capability: 'card_payments',
 		allows_manual_capture: true,
 	},
 	giropay: {
@@ -30,9 +23,65 @@ export default {
 			'Expand your business with giropay — Germany’s second most popular payment system.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: GiropayIcon,
+		Icon: icons.giropay,
 		currencies: [ 'EUR' ],
-		capability: 'giropay_payments',
+	},
+	klarna: {
+		id: 'klarna',
+		label: __( 'Klarna', 'woocommerce-gateway-stripe' ),
+		description: __(
+			'Allow customers to pay over time with Klarna.',
+			'woocommerce-gateway-stripe'
+		),
+		Icon: icons.klarna,
+		currencies: [
+			'AUD',
+			'CAD',
+			'CHF',
+			'CZK',
+			'DKK',
+			'EUR',
+			'GBP',
+			'NOK',
+			'NZD',
+			'PLN',
+			'SEK',
+			'USD',
+		],
+		allows_manual_capture: true,
+	},
+	affirm: {
+		id: 'affirm',
+		label: __( 'Affirm', 'woocommerce-gateway-stripe' ),
+		// translators: %s is the store currency.
+		description: __(
+			'Allow customers to pay over time. Available to all customers paying in %s. Purchases from 50 %s to 30,000 %s are eligible for Affirm financing.',
+			'woocommerce-gateway-stripe'
+		),
+		Icon: icons.affirm,
+		currencies: [ 'USD', 'CAD' ],
+		allows_manual_capture: true,
+	},
+	// Clearpay and Afterpay are the same payment method, but with different strings and icon.
+	afterpay_clearpay: {
+		id: 'afterpay_clearpay',
+		label:
+			accountCountry === 'GB'
+				? __( 'Clearpay', 'woocommerce-gateway-stripe' )
+				: __( 'Afterpay', 'woocommerce-gateway-stripe' ),
+		description:
+			accountCountry === 'GB'
+				? __(
+						'Allow customers to pay over time with Clearpay. {{limitsLink}}Transaction limits vary by country{{/limitsLink}}.',
+						'woocommerce-gateway-stripe'
+				  )
+				: __(
+						'Allow customers to pay over time with Afterpay. {{limitsLink}}Transaction limits vary by country{{/limitsLink}}.',
+						'woocommerce-gateway-stripe'
+				  ),
+		Icon: accountCountry === 'GB' ? icons.clearpay : icons.afterpay,
+		currencies: [ 'USD', 'AUD', 'CAD', 'NZD', 'GBP' ],
+		allows_manual_capture: true,
 	},
 	sepa_debit: {
 		id: 'sepa_debit',
@@ -41,9 +90,18 @@ export default {
 			'Reach 500 million customers and over 20 million businesses across the European Union.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: SepaIcon,
+		Icon: icons.sepa_debit,
 		currencies: [ 'EUR' ],
-		capability: 'sepa_debit_payments',
+	},
+	sepa: {
+		id: 'sepa',
+		label: __( 'Direct debit payment', 'woocommerce-gateway-stripe' ),
+		description: __(
+			'Reach 500 million customers and over 20 million businesses across the European Union.',
+			'woocommerce-gateway-stripe'
+		),
+		Icon: icons.sepa_debit,
+		currencies: [ 'EUR' ],
 	},
 	sofort: {
 		id: 'sofort',
@@ -52,9 +110,8 @@ export default {
 			'Accept secure bank transfers from Austria, Belgium, Germany, Italy, Netherlands, and Spain.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: SofortIcon,
+		Icon: icons.sofort,
 		currencies: [ 'EUR' ],
-		capability: 'sofort_payments',
 	},
 	eps: {
 		id: 'eps',
@@ -63,9 +120,8 @@ export default {
 			'EPS is an Austria-based payment method that allows customers to complete transactions online using their bank credentials.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: EpsIcon,
+		Icon: icons.eps,
 		currencies: [ 'EUR' ],
-		capability: 'eps_payments',
 	},
 	bancontact: {
 		id: 'bancontact',
@@ -74,9 +130,8 @@ export default {
 			'Bancontact is the most popular online payment method in Belgium, with over 15 million cards in circulation.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: BancontactIcon,
+		Icon: icons.bancontact,
 		currencies: [ 'EUR' ],
-		capability: 'bancontact_payments',
 	},
 	ideal: {
 		id: 'ideal',
@@ -85,9 +140,8 @@ export default {
 			'iDEAL is a Netherlands-based payment method that allows customers to complete transactions online using their bank credentials.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: IdealIcon,
+		Icon: icons.ideal,
 		currencies: [ 'EUR' ],
-		capability: 'ideal_payments',
 	},
 	p24: {
 		id: 'p24',
@@ -96,9 +150,8 @@ export default {
 			'Przelewy24 is a Poland-based payment method aggregator that allows customers to complete transactions online using bank transfers and other methods.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: P24Icon,
+		Icon: icons.p24,
 		currencies: [ 'EUR', 'PLN' ],
-		capability: 'p24_payments',
 	},
 	boleto: {
 		id: 'boleto',
@@ -107,9 +160,8 @@ export default {
 			'Boleto is an official payment method in Brazil. Customers receive a voucher that can be paid at authorized agencies or banks, ATMs, or online bank portals.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: BoletoIcon,
+		Icon: icons.boleto,
 		currencies: [ 'BRL' ],
-		capability: 'boleto_payments',
 	},
 	oxxo: {
 		id: 'oxxo',
@@ -118,9 +170,8 @@ export default {
 			'OXXO is a Mexican chain of convenience stores that allows customers to pay bills and online purchases in-store with cash.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: OxxoIcon,
+		Icon: icons.oxxo,
 		currencies: [ 'MXN' ],
-		capability: 'oxxo_payments',
 	},
 	alipay: {
 		id: 'alipay',
@@ -129,7 +180,7 @@ export default {
 			'Alipay is a popular wallet in China, operated by Ant Financial Services Group, a financial services provider affiliated with Alibaba.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: () => null,
+		Icon: icons.alipay,
 		currencies: [
 			'AUD',
 			'CAD',
@@ -142,7 +193,6 @@ export default {
 			'NZD',
 			'USD',
 		],
-		capability: undefined,
 	},
 	multibanco: {
 		id: 'multibanco',
@@ -151,8 +201,42 @@ export default {
 			'Multibanco is an interbank network that links the ATMs of all major banks in Portugal, allowing customers to pay through either their ATM or online banking environment.',
 			'woocommerce-gateway-stripe'
 		),
-		Icon: () => null,
+		Icon: icons.multibanco,
 		currencies: [ 'EUR' ],
-		capability: undefined,
+	},
+	wechat_pay: {
+		id: 'wechat_pay',
+		label: __( 'WeChat Pay', 'woocommerce-gateway-stripe' ),
+		description: __(
+			'WeChat Pay is a popular mobile payment and digital wallet service by WeChat in China.',
+			'woocommerce-gateway-stripe'
+		),
+		Icon: icons.wechat_pay,
+		currencies: [
+			'CNY',
+			'AUD',
+			'CAD',
+			'EUR',
+			'GBP',
+			'HKD',
+			'JPY',
+			'SGD',
+			'USD',
+			'DKK',
+			'NOK',
+			'SEK',
+			'CHF',
+		],
+	},
+	cashapp: {
+		id: 'cashapp',
+		label: __( 'Cash App Pay', 'woocommerce-gateway-stripe' ),
+		description: __(
+			'Cash App is a popular consumer app in the US that allows customers to bank, invest, send, and receive money using their digital wallet.',
+			'woocommerce-gateway-stripe'
+		),
+		Icon: icons.cashapp,
+		currencies: [ 'USD' ],
+		capability: 'cashapp_payments',
 	},
 };

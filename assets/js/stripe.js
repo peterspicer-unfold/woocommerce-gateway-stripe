@@ -1,6 +1,12 @@
-/* global wc_stripe_params */
+/* global wc_stripe_params, Stripe */
 
-jQuery( function( $ ) {
+import {
+	PAYMENT_METHOD_BOLETO,
+	PAYMENT_METHOD_OXXO,
+	PAYMENT_METHOD_SEPA,
+} from 'wcstripe/stripe-utils/constants';
+
+jQuery( function($ ) {
 	'use strict';
 
 	try {
@@ -92,7 +98,7 @@ jQuery( function( $ ) {
 			elementClasses = wc_stripe_params.elements_classes ? wc_stripe_params.elements_classes : elementClasses;
 
 			if ( 'yes' === wc_stripe_params.inline_cc_form ) {
-				stripe_card = elements.create( 'card', { style: elementStyles, hidePostalCode: true } );
+				stripe_card = elements.create( 'card', { style: elementStyles, hidePostalCode: true, hideIcon: true } );
 
 				stripe_card.addEventListener( 'change', function( event ) {
 					wc_stripe_form.onCCFormChange();
@@ -102,7 +108,7 @@ jQuery( function( $ ) {
 					}
 				} );
 			} else {
-				stripe_card = elements.create( 'cardNumber', { style: elementStyles, classes: elementClasses } );
+				stripe_card = elements.create( 'cardNumber', { style: elementStyles, classes: elementClasses, showIcon: false } );
 				stripe_exp  = elements.create( 'cardExpiry', { style: elementStyles, classes: elementClasses } );
 				stripe_cvc  = elements.create( 'cardCvc', { style: elementStyles, classes: elementClasses } );
 
@@ -538,7 +544,7 @@ jQuery( function( $ ) {
 			if ( wc_stripe_form.isSepaChosen() ) {
 				extra_details.currency = $( '#stripe-sepa_debit-payment-data' ).data( 'currency' );
 				extra_details.mandate  = { notification_method: wc_stripe_params.sepa_mandate_notification };
-				extra_details.type     = 'sepa_debit';
+				extra_details.type     = PAYMENT_METHOD_SEPA;
 
 				return stripe.createSource( iban, extra_details ).then( wc_stripe_form.sourceResponse );
 			}
@@ -565,7 +571,9 @@ jQuery( function( $ ) {
 
 			wc_stripe_form.reset();
 
-			const payment_method_id = response?.paymentMethod?.id ?? response?.source?.id;
+			// TODO: This can be restored to the optional chaining and nullish coalescing operators version, when we move
+			// this file to the building pipeline: response?.paymentMethod?.id ?? response?.source?.id
+			var payment_method_id = response.paymentMethod && response.paymentMethod.id ? response.paymentMethod.id : response.source && response.source.id ? response.source.id : undefined;
 
 			wc_stripe_form.form.append(
 				$( '<input type="hidden" />' )
@@ -594,7 +602,9 @@ jQuery( function( $ ) {
 				}
 			};
 
-			const payment_method_id = response?.paymentMethod?.id ?? response?.source?.id;
+			// TODO: This can be restored to the optional chaining and nullish coalescing operators version, when we move
+			// this file to the building pipeline: response?.paymentMethod?.id ?? response?.source?.id
+			var payment_method_id = response.paymentMethod && response.paymentMethod.id ? response.paymentMethod.id : response.source && response.source.id ? response.source.id : undefined;
 
 			$.post( {
 				url: wc_stripe_form.getAjaxURL( 'create_setup_intent'),
@@ -691,7 +701,7 @@ jQuery( function( $ ) {
 		 * After the customer closes the modal proceeds with checkout normally
 		 */
 		handleBoleto: function () {
-			wc_stripe_form.executeCheckout( 'boleto', function ( checkout_response ) {
+			wc_stripe_form.executeCheckout( PAYMENT_METHOD_BOLETO, function ( checkout_response ) {
 				stripe.confirmBoletoPayment(
 					checkout_response.client_secret,
 					checkout_response.confirm_payment_data
@@ -715,6 +725,7 @@ jQuery( function( $ ) {
 			if( wc_stripe_form.form.attr('id') === 'order_review' ) {
 				formFields._ajax_nonce = wc_stripe_params.updatePaymentIntentNonce;
 				formFields.order_id = wc_stripe_params.orderId;
+				formFields.stripe_order_key = wc_stripe_params.stripe_order_key;
 
 				$.ajax( {
 					url: wc_stripe_form.getAjaxURL( payment_method + '_update_payment_intent' ),
@@ -774,7 +785,7 @@ jQuery( function( $ ) {
 		 * After the customer closes the modal proceeds with checkout normally
 		 */
 		handleOxxo: function () {
-			wc_stripe_form.executeCheckout( 'oxxo', function ( checkout_response ) {
+			wc_stripe_form.executeCheckout( PAYMENT_METHOD_OXXO, function ( checkout_response ) {
 				stripe.confirmOxxoPayment(
 					checkout_response.client_secret,
 					checkout_response.confirm_payment_data
@@ -825,7 +836,7 @@ jQuery( function( $ ) {
 		 */
 		onError: function( e, result ) {
 			var message = result.error.message;
-			var selectedMethodElement = wc_stripe_form.getSelectedPaymentElement().closest( 'li' );
+			var selectedMethodElement = wc_stripe_form.getSelectedPaymentElement().closest( '.wc_payment_method' );
 			var savedTokens = selectedMethodElement.find( '.woocommerce-SavedPaymentMethods-tokenInput' );
 			var errorContainer;
 

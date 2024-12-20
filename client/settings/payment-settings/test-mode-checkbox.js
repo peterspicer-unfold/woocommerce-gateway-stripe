@@ -13,6 +13,7 @@ const TestModeCheckbox = () => {
 
 	return (
 		<>
+			<h4>{ __( 'Test mode', 'woocommerce-gateway-stripe' ) }</h4>
 			<CheckboxControl
 				checked={ isTestModeEnabled }
 				onChange={ handleCheckboxChange }
@@ -25,11 +26,11 @@ const TestModeCheckbox = () => {
 					components: {
 						testCardNumbersLink: (
 							// eslint-disable-next-line jsx-a11y/anchor-has-content
-							<a href="https://stripe.com/docs/testing#cards" />
+							<a href="https://docs.stripe.com/testing#cards" />
 						),
 						learnMoreLink: (
 							// eslint-disable-next-line jsx-a11y/anchor-has-content
-							<a href="https://stripe.com/docs/testing" />
+							<a href="https://woocommerce.com/document/stripe/customer-experience/testing/" />
 						),
 					},
 				} ) }

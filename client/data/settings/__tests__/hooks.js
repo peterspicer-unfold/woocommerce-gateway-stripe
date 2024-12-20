@@ -4,6 +4,8 @@ import {
 	useEnabledPaymentMethodIds,
 	useGetAvailablePaymentMethodIds,
 	useSettings,
+	useGetOrderedPaymentMethodIds,
+	useCustomizePaymentMethodSettings,
 	usePaymentRequestEnabledSettings,
 	usePaymentRequestButtonTheme,
 	usePaymentRequestLocations,
@@ -13,13 +15,16 @@ import {
 	useTestMode,
 	useSavedCards,
 	useSeparateCardForm,
-	useAccountStatementDescriptor,
 	useIsShortAccountStatementEnabled,
-	useShortAccountStatementDescriptor,
 	useDebugLog,
 	useManualCapture,
 } from '../hooks';
 import { STORE_NAME } from '../../constants';
+import {
+	PAYMENT_METHOD_CARD,
+	PAYMENT_METHOD_EPS,
+	PAYMENT_METHOD_GIROPAY,
+} from 'wcstripe/stripe-utils/constants';
 
 jest.mock( '@wordpress/data' );
 
@@ -46,7 +51,7 @@ describe( 'Settings hooks tests', () => {
 		test( 'returns the value of getSettings().available_payment_method_ids', () => {
 			selectors = {
 				getSettings: jest.fn( () => ( {
-					available_payment_method_ids: [ 'card' ],
+					available_payment_method_ids: [ PAYMENT_METHOD_CARD ],
 				} ) ),
 			};
 
@@ -54,7 +59,7 @@ describe( 'Settings hooks tests', () => {
 				useGetAvailablePaymentMethodIds()
 			);
 
-			expect( result.current ).toEqual( [ 'card' ] );
+			expect( result.current ).toEqual( [ PAYMENT_METHOD_CARD ] );
 		} );
 
 		test( 'returns an empty array if setting is missing', () => {
@@ -120,6 +125,113 @@ describe( 'Settings hooks tests', () => {
 		);
 	} );
 
+	describe( 'useCustomizePaymentMethodSettings()', () => {
+		beforeEach( () => {
+			actions = {
+				saveIndividualPaymentMethodSettings: jest.fn(),
+				updateSettingsValues: jest.fn(),
+			};
+
+			selectors = {
+				getIndividualPaymentMethodSettings: jest.fn( () => ( {
+					eps: {
+						title: 'EPS',
+						description: 'Pay with EPS',
+					},
+					giropay: {
+						title: 'Giropay',
+						description: 'Pay with Giropay',
+					},
+				} ) ),
+				isCustomizingPaymentMethod: jest.fn(),
+			};
+		} );
+
+		test( 'returns individula payment method settings from selector', () => {
+			const { result } = renderHook( useCustomizePaymentMethodSettings );
+			const {
+				individualPaymentMethodSettings,
+				customizePaymentMethod,
+			} = result.current;
+
+			expect( individualPaymentMethodSettings ).toEqual( {
+				eps: {
+					title: 'EPS',
+					description: 'Pay with EPS',
+				},
+				giropay: {
+					title: 'Giropay',
+					description: 'Pay with Giropay',
+				},
+			} );
+
+			customizePaymentMethod( PAYMENT_METHOD_GIROPAY, true, {
+				giropay: {
+					name: 'Giropay',
+					description: 'Pay with Giropay',
+					expiration: '10',
+				},
+			} );
+			expect(
+				actions.saveIndividualPaymentMethodSettings
+			).toHaveBeenCalledWith( {
+				isEnabled: true,
+				method: PAYMENT_METHOD_GIROPAY,
+				name: 'Giropay',
+				description: 'Pay with Giropay',
+				expiration: '10',
+			} );
+		} );
+	} );
+
+	describe( 'useGetOrderedPaymentMethodIds()', () => {
+		beforeEach( () => {
+			actions = {
+				updateSettingsValues: jest.fn(),
+				saveOrderedPaymentMethodIds: jest.fn(),
+			};
+
+			selectors = {
+				getSettings: jest.fn( () => ( {
+					foo: 'bar',
+					ordered_payment_method_ids: [
+						PAYMENT_METHOD_CARD,
+						PAYMENT_METHOD_EPS,
+						PAYMENT_METHOD_GIROPAY,
+					],
+				} ) ),
+				isSavingOrderedPaymentMethodIds: jest.fn(),
+			};
+		} );
+
+		test( 'returns orderedPaymentMethodIds from selector', () => {
+			const { result } = renderHook( useGetOrderedPaymentMethodIds );
+			const {
+				orderedPaymentMethodIds,
+				setOrderedPaymentMethodIds,
+			} = result.current;
+
+			expect( orderedPaymentMethodIds ).toEqual( [
+				PAYMENT_METHOD_CARD,
+				PAYMENT_METHOD_EPS,
+				PAYMENT_METHOD_GIROPAY,
+			] );
+
+			setOrderedPaymentMethodIds( [
+				PAYMENT_METHOD_GIROPAY,
+				PAYMENT_METHOD_CARD,
+				PAYMENT_METHOD_EPS,
+			] );
+			expect( actions.updateSettingsValues ).toHaveBeenCalledWith( {
+				ordered_payment_method_ids: [
+					PAYMENT_METHOD_GIROPAY,
+					PAYMENT_METHOD_CARD,
+					PAYMENT_METHOD_EPS,
+				],
+			} );
+		} );
+	} );
+
 	const generatedHookExpectations = {
 		useEnabledPaymentMethodIds: {
 			hook: useEnabledPaymentMethodIds,
@@ -181,23 +293,11 @@ describe( 'Settings hooks tests', () => {
 			testedValue: true,
 			fallbackValue: false,
 		},
-		useAccountStatementDescriptor: {
-			hook: useAccountStatementDescriptor,
-			storeKey: 'statement_descriptor',
-			testedValue: 'foo',
-			fallbackValue: '',
-		},
 		useIsShortAccountStatementEnabled: {
 			hook: useIsShortAccountStatementEnabled,
 			storeKey: 'is_short_statement_descriptor_enabled',
 			testedValue: true,
 			fallbackValue: false,
-		},
-		useShortAccountStatementDescriptor: {
-			hook: useShortAccountStatementDescriptor,
-			storeKey: 'short_statement_descriptor',
-			testedValue: 'bar',
-			fallbackValue: '',
 		},
 		useDebugLog: {
 			hook: useDebugLog,

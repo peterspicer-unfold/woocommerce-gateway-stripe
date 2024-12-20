@@ -49,19 +49,19 @@ class WC_Stripe_Subscription_Renewal_Test extends WP_UnitTestCase {
 
 		$this->statement_descriptor = 'This is a statement descriptor.';
 
-		$stripe_settings = get_option( 'woocommerce_stripe_settings', [] );
+		$stripe_settings = WC_Stripe_Helper::get_stripe_settings();
 		// Disable UPE.
 		$stripe_settings[ WC_Stripe_Feature_Flags::UPE_CHECKOUT_FEATURE_ATTRIBUTE_NAME ] = 'no';
 		// Set statement descriptor.
 		$stripe_settings['statement_descriptor'] = $this->statement_descriptor;
-		update_option( 'woocommerce_stripe_settings', $stripe_settings );
+		WC_Stripe_Helper::update_main_stripe_settings( $stripe_settings );
 	}
 
 	/**
 	 * Tears down the stuff we set up.
 	 */
 	public function tear_down() {
-		delete_option( 'woocommerce_stripe_settings' );
+		WC_Stripe_Helper::delete_main_stripe_settings();
 
 		parent::tear_down();
 	}
@@ -84,7 +84,6 @@ class WC_Stripe_Subscription_Renewal_Test extends WP_UnitTestCase {
 		$currency                      = strtolower( $renewal_order->get_currency() );
 		$customer                      = 'cus_123abc';
 		$source                        = 'src_123abc';
-		$statement_descriptor          = WC_Stripe_Helper::clean_statement_descriptor( $this->statement_descriptor );
 		$should_retry                  = false;
 		$previous_error                = false;
 		$payments_intents_api_endpoint = 'https://api.stripe.com/v1/payment_intents';
@@ -103,7 +102,7 @@ class WC_Stripe_Subscription_Renewal_Test extends WP_UnitTestCase {
 						'customer'       => $customer,
 						'source'         => $source,
 						'source_object'  => (object) [
-							'type' => 'card',
+							'type' => WC_Stripe_Payment_Methods::CARD,
 						],
 						'payment_method' => null,
 					]
@@ -118,7 +117,6 @@ class WC_Stripe_Subscription_Renewal_Test extends WP_UnitTestCase {
 			$currency,
 			$customer,
 			$source,
-			$statement_descriptor,
 			$payments_intents_api_endpoint,
 			&$urls_used
 		) {
@@ -142,12 +140,12 @@ class WC_Stripe_Subscription_Renewal_Test extends WP_UnitTestCase {
 				'source'               => $source,
 				'amount'               => $stripe_amount,
 				'currency'             => $currency,
-				'payment_method_types' => [ 'card' ],
+				'payment_method_types' => [ WC_Stripe_Payment_Methods::CARD ],
 				'customer'             => $customer,
 				'off_session'          => 'true',
 				'confirm'              => 'true',
 				'confirmation_method'  => 'automatic',
-				'statement_descriptor' => $statement_descriptor,
+				'capture_method'       => 'automatic',
 			];
 			foreach ( $expected_request_body_values as $key => $value ) {
 				$this->assertArrayHasKey( $key, $request_args['body'] );
@@ -187,7 +185,6 @@ class WC_Stripe_Subscription_Renewal_Test extends WP_UnitTestCase {
 			// Assert: the request body does not contains these keys.
 			$expected_missing_request_body_keys = [
 				'capture', // No need to capture with a payment intent.
-				'capture_method', // The default ('automatic') is what we want in this case, so we leave it off.
 				'expand[]',
 			];
 			foreach ( $expected_missing_request_body_keys as $key ) {
@@ -286,7 +283,7 @@ class WC_Stripe_Subscription_Renewal_Test extends WP_UnitTestCase {
 						'customer'       => $customer,
 						'source'         => $source,
 						'source_object'  => (object) [
-							'type' => 'card',
+							'type' => WC_Stripe_Payment_Methods::CARD,
 						],
 						'payment_method' => null,
 					]

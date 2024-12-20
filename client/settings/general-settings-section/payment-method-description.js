@@ -2,6 +2,7 @@ import React from 'react';
 import styled from '@emotion/styled';
 import PaymentMethodMissingCurrencyPill from '../../components/payment-method-missing-currency-pill';
 import PaymentMethodCapabilityStatusPill from 'wcstripe/components/payment-method-capability-status-pill';
+import PaymentMethodDeprecationPill from 'wcstripe/components/payment-method-deprecation-pill';
 
 const Wrapper = styled.div`
 	display: flex;
@@ -43,24 +44,30 @@ const PaymentMethodDescription = ( {
 	label,
 	description,
 	id,
+	deprecated,
 	...restProps
 } ) => {
 	return (
 		<Wrapper { ...restProps }>
 			<IconWrapper>
-				<Icon size="medium" />
+				<Icon size="medium" alt={ label } />
 			</IconWrapper>
 			<div>
 				<LabelWrapper>
 					<Label>{ label }</Label>
-					<PaymentMethodCapabilityStatusPill
-						id={ id }
-						label={ label }
-					/>
-					<PaymentMethodMissingCurrencyPill
-						id={ id }
-						label={ label }
-					/>
+					{ deprecated && <PaymentMethodDeprecationPill /> }
+					{ ! deprecated && (
+						<>
+							<PaymentMethodMissingCurrencyPill
+								id={ id }
+								label={ label }
+							/>
+							<PaymentMethodCapabilityStatusPill
+								id={ id }
+								label={ label }
+							/>
+						</>
+					) }
 				</LabelWrapper>
 				<Description>{ description }</Description>
 			</div>
